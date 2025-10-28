@@ -1,6 +1,40 @@
 """
 ANALISI COMPLETA CURVE DI TRAFFICO - CALL CENTER
 Analisi professionale per WFM con curve previsionali, consuntivi e forecast
+
+✨ NUOVE FUNZIONALITÀ (versione migliorata):
+====================================================
+
+🔮 FORECAST AVANZATI CON MULTIPLE STAGIONALITÀ:
+- ✅ TBATS: Gestisce automaticamente weekly + monthly + trend
+- ✅ Prophet: Include festività italiane + regressori weekend
+- ✅ Forecast Intraday Dinamico: Modelli separati per ogni fascia oraria
+- ✅ SARIMA: Modelli ARIMA con stagionalità
+- ✅ Confronto visivo tra tutti i modelli
+
+📊 STAGIONALITÀ CATTURATE:
+- Weekly (lun-dom): ✅ Tutti i modelli
+- Monthly (pattern mensile): ✅ Prophet, TBATS
+- Intraday (fasce orarie): ✅ Forecast Intraday Dinamico
+- Festività italiane: ✅ Prophet
+- Interazioni giorno×fascia: ✅ Forecast Intraday Dinamico
+
+🎯 MIGLIORAMENTI RISPETTO ALLA VERSIONE PRECEDENTE:
+1. Pattern intraday DINAMICI invece di fissi storici
+2. Gestione automatica festività italiane (Natale, Pasqua, ecc.)
+3. Modelli che catturano multiple stagionalità simultaneamente
+4. Confronto grafico tra 7 diversi modelli di forecast
+5. Regressori esterni (weekend, festività)
+
+📦 DIPENDENZE:
+- Obbligatorie: pandas, numpy, matplotlib, seaborn
+- Consigliate: statsmodels, tbats, prophet, holidays
+
+Per installare tutte le dipendenze:
+    pip install pandas numpy matplotlib seaborn statsmodels tbats prophet holidays
+
+AUTORE: Analisi WFM Call Center
+VERSIONE: 2.0 Enhanced (con multiple stagionalità)
 """
 
 import pandas as pd
@@ -52,6 +86,14 @@ except ImportError:
     STATSMODELS_AVAILABLE = False
     print("ATTENZIONE: statsmodels non disponibile")
     print("Per forecast avanzato installa: pip install statsmodels")
+
+try:
+    from tbats import TBATS
+    TBATS_AVAILABLE = True
+except ImportError:
+    TBATS_AVAILABLE = False
+    print("NOTA: TBATS non disponibile (opzionale)")
+    print("Per multiple stagionalità avanzate: pip install tbats")
 
 # Configurazione grafica
 plt.rcParams['figure.figsize'] = (15, 8)
@@ -880,6 +922,108 @@ def _distribuisci_forecast_per_fascia(pattern_intraday, daily_forecast_df):
     return pd.concat(forecast_fascia_list, ignore_index=True)
 
 
+def _forecast_intraday_dinamico(df, giorni_forecast=28, produce_outputs=False):
+    """
+    Forecast intraday dinamico con modelli separati per fascia oraria.
+    Cattura le interazioni giorno×fascia in modo più accurato rispetto ai pattern fissi.
+    """
+    if not STATSMODELS_AVAILABLE:
+        if produce_outputs:
+            print("   Forecast intraday dinamico richiede statsmodels")
+        return None
+
+    try:
+        from statsmodels.tsa.holtwinters import ExponentialSmoothing
+
+        # Prepara dati per fascia oraria con giorno settimana
+        df_fascia = df.copy()
+        df_fascia['DOW'] = df_fascia['DATA'].dt.dayofweek
+
+        # Lista delle fasce uniche
+        fasce_uniche = df_fascia.sort_values('MINUTI')['FASCIA'].unique()
+
+        forecast_results = []
+        last_date = df['DATA'].max()
+        future_dates = pd.date_range(start=last_date + timedelta(days=1), periods=giorni_forecast, freq='D')
+
+        if produce_outputs:
+            print(f"   Modellando {len(fasce_uniche)} fasce orarie...")
+
+        for fascia in fasce_uniche:
+            df_questa_fascia = df_fascia[df_fascia['FASCIA'] == fascia].copy()
+
+            if len(df_questa_fascia) < 14:
+                # Dati insufficienti, usa media storica
+                media_per_dow = df_questa_fascia.groupby('DOW')['OFFERTO'].mean().to_dict()
+                for future_date in future_dates:
+                    dow = future_date.dayofweek
+                    forecast_val = media_per_dow.get(dow, df_questa_fascia['OFFERTO'].mean())
+                    forecast_results.append({
+                        'DATA': future_date,
+                        'FASCIA': fascia,
+                        'MINUTI': df_questa_fascia['MINUTI'].iloc[0] if len(df_questa_fascia) > 0 else 0,
+                        'GG_SETT': ['lun','mar','mer','gio','ven','sab','dom'][dow],
+                        'FORECAST': max(0, forecast_val)
+                    })
+                continue
+
+            # Crea serie temporale per questa fascia
+            ts = df_questa_fascia.groupby('DATA')['OFFERTO'].mean().sort_index()
+            ts = ts.asfreq('D', fill_value=0)
+
+            try:
+                # Modello Holt-Winters con stagionalità settimanale
+                model = ExponentialSmoothing(
+                    ts.values,
+                    seasonal_periods=7,
+                    trend='add',
+                    seasonal='add',
+                    initialization_method='estimated'
+                )
+                fit = model.fit()
+                forecast_vals = fit.forecast(steps=giorni_forecast)
+
+            except Exception:
+                # Fallback: usa media mobile con pattern settimanale
+                media_per_dow = df_questa_fascia.groupby('DOW')['OFFERTO'].mean().to_dict()
+                base = ts.tail(7).mean()
+                forecast_vals = []
+                for i, future_date in enumerate(future_dates):
+                    dow = future_date.dayofweek
+                    dow_factor = media_per_dow.get(dow, base) / base if base > 0 else 1.0
+                    forecast_vals.append(base * dow_factor)
+
+            # Salva risultati
+            for i, future_date in enumerate(future_dates):
+                dow = future_date.dayofweek
+                forecast_results.append({
+                    'DATA': future_date,
+                    'FASCIA': fascia,
+                    'MINUTI': df_questa_fascia['MINUTI'].iloc[0] if len(df_questa_fascia) > 0 else 0,
+                    'GG_SETT': ['lun','mar','mer','gio','ven','sab','dom'][dow],
+                    'FORECAST': max(0, forecast_vals[i] if i < len(forecast_vals) else 0)
+                })
+
+        forecast_df = pd.DataFrame(forecast_results)
+
+        # Calcola anche totale giornaliero per compatibilità
+        daily_forecast = forecast_df.groupby(['DATA', 'GG_SETT'])['FORECAST'].sum().reset_index()
+        daily_forecast.columns = ['DATA', 'GG_SETT', 'FORECAST']
+
+        if produce_outputs:
+            print(f"   Forecast intraday dinamico completato: {len(forecast_df)} slot previsti")
+
+        return {
+            'giornaliero': daily_forecast,
+            'per_fascia': forecast_df
+        }
+
+    except Exception as exc:
+        if produce_outputs:
+            print(f"   Forecast intraday dinamico fallito: {exc}")
+        return None
+
+
 def _forecast_pattern_based(df, giorni_forecast):
     """Forecast basato su pattern settimanale e trend semplice (fallback attuale)."""
     daily = df.groupby('DATA').agg({'OFFERTO': 'sum', 'GG SETT': 'first'}).reset_index()
@@ -983,8 +1127,57 @@ def _forecast_sarima(df, giorni_forecast=28, order=(1, 1, 1), seasonal_order=(1,
     }
 
 
+def _genera_festivita_italiane(anno_inizio, anno_fine):
+    """
+    Genera un DataFrame con le festività italiane principali.
+    Include festività fisse e mobili (Pasqua).
+    """
+    festivita_fisse = {
+        'Capodanno': (1, 1),
+        'Epifania': (1, 6),
+        'Festa Liberazione': (4, 25),
+        'Festa Lavoro': (5, 1),
+        'Festa Repubblica': (6, 2),
+        'Ferragosto': (8, 15),
+        'Ognissanti': (11, 1),
+        'Immacolata': (12, 8),
+        'Natale': (12, 25),
+        'Santo Stefano': (12, 26)
+    }
+
+    festivita_list = []
+
+    # Festività fisse
+    for anno in range(anno_inizio, anno_fine + 1):
+        for nome, (mese, giorno) in festivita_fisse.items():
+            festivita_list.append({
+                'holiday': nome,
+                'ds': pd.Timestamp(anno, mese, giorno),
+                'lower_window': 0,
+                'upper_window': 0
+            })
+
+    # Pasqua (calcolo approssimativo - per produzione usare libreria holidays)
+    try:
+        import holidays
+        it_holidays = holidays.Italy(years=range(anno_inizio, anno_fine + 1))
+        for data, nome in it_holidays.items():
+            if 'Pasqua' in nome or 'Easter' in nome:
+                festivita_list.append({
+                    'holiday': 'Pasqua',
+                    'ds': pd.Timestamp(data),
+                    'lower_window': 0,
+                    'upper_window': 1  # Lunedì dell'Angelo
+                })
+    except ImportError:
+        # Se holidays non disponibile, usa solo festività fisse
+        pass
+
+    return pd.DataFrame(festivita_list)
+
+
 def _forecast_prophet(df, giorni_forecast=28, produce_outputs=False):
-    """Forecast con Prophet (se disponibile)."""
+    """Forecast con Prophet (se disponibile) - con gestione festività."""
     try:
         from prophet import Prophet
     except ImportError:
@@ -998,13 +1191,24 @@ def _forecast_prophet(df, giorni_forecast=28, produce_outputs=False):
 
     prophet_df = daily.rename(columns={'DATA': 'ds', 'OFFERTO': 'y'})
 
+    # Genera festività italiane
+    anno_min = daily['DATA'].min().year
+    anno_max = daily['DATA'].max().year + int(np.ceil(giorni_forecast / 365)) + 1
+    festivita = _genera_festivita_italiane(anno_min, anno_max)
+
     model = Prophet(
+        holidays=festivita,  # ✅ NOVITÀ: Gestione festività
         weekly_seasonality=True,
-        yearly_seasonality=False,
+        yearly_seasonality=True if (anno_max - anno_min) >= 1 else False,  # Attiva se multi-anno
         daily_seasonality=False,
-        changepoint_prior_scale=0.1
+        changepoint_prior_scale=0.05,  # Più conservativo per dati call center
+        seasonality_mode='multiplicative'  # Migliore per dati con trend crescente
     )
     model.add_seasonality(name='monthly', period=30.5, fourier_order=5)
+
+    # ✅ NOVITÀ: Aggiungi regressori per weekend
+    prophet_df['is_weekend'] = prophet_df['ds'].dt.dayofweek.isin([5, 6]).astype(int)
+    model.add_regressor('is_weekend')
 
     try:
         model.fit(prophet_df)
@@ -1014,6 +1218,9 @@ def _forecast_prophet(df, giorni_forecast=28, produce_outputs=False):
         return None
 
     future = model.make_future_dataframe(periods=giorni_forecast, freq='D')
+    # Aggiungi regressori anche al future dataframe
+    future['is_weekend'] = future['ds'].dt.dayofweek.isin([5, 6]).astype(int)
+
     forecast = model.predict(future)
     future_forecast = forecast.tail(giorni_forecast)
 
@@ -1033,6 +1240,67 @@ def _forecast_prophet(df, giorni_forecast=28, produce_outputs=False):
         'per_fascia': forecast_fascia_df,
         'model': model
     }
+
+
+def _forecast_tbats(df, giorni_forecast=28, produce_outputs=False):
+    """
+    Forecast con TBATS - gestisce multiple stagionalità automaticamente.
+    Ottimo per catturare weekly + monthly + intraday patterns.
+    """
+    if not TBATS_AVAILABLE:
+        if produce_outputs:
+            print("   TBATS non installato, modello TBATS saltato")
+        return None
+
+    daily = df.groupby('DATA').agg({'OFFERTO': 'sum'}).reset_index().sort_values('DATA')
+    if daily.empty or giorni_forecast <= 0:
+        return None
+
+    try:
+        # TBATS rileva automaticamente le stagionalità
+        # seasonal_periods: [7 (weekly), 30.5 (monthly)]
+        estimator = TBATS(
+            seasonal_periods=[7, 30.5],
+            use_trend=True,
+            use_box_cox=False,  # Box-Cox può essere instabile con dati call center
+            n_jobs=1
+        )
+
+        if produce_outputs:
+            print("   Fitting TBATS (può richiedere tempo)...")
+
+        fitted_model = estimator.fit(daily['OFFERTO'].values)
+
+        # Genera forecast
+        forecast_values, conf_int = fitted_model.forecast(steps=giorni_forecast, confidence_level=0.95)
+
+        last_date = daily['DATA'].max()
+        future_dates = pd.date_range(start=last_date + timedelta(days=1), periods=giorni_forecast, freq='D')
+
+        forecast_daily_df = pd.DataFrame({
+            'DATA': future_dates,
+            'FORECAST': forecast_values,
+            'GG_SETT': [['lun','mar','mer','gio','ven','sab','dom'][d.weekday()] for d in future_dates],
+            'CI_LOWER': np.clip(conf_int['lower_bound'], a_min=0, a_max=None),
+            'CI_UPPER': np.clip(conf_int['upper_bound'], a_min=0, a_max=None)
+        })
+
+        pattern_intraday = _costruisci_pattern_intraday(df)
+        forecast_fascia_df = _distribuisci_forecast_per_fascia(pattern_intraday, forecast_daily_df)
+
+        if produce_outputs:
+            print(f"   TBATS completato - Componenti: {fitted_model.params.components}")
+
+        return {
+            'giornaliero': forecast_daily_df,
+            'per_fascia': forecast_fascia_df,
+            'model': fitted_model
+        }
+
+    except Exception as exc:
+        if produce_outputs:
+            print(f"   TBATS fallito: {exc}")
+        return None
 
 
 def _salva_forecast_excel(output_dir, nome_file, forecast_data):
@@ -1057,7 +1325,7 @@ def genera_forecast_modelli(df, output_dir, giorni_forecast=28, metodi=None):
                  (valori supportati: 'holtwinters', 'pattern', 'naive')
     """
     if metodi is None:
-        metodi = ('holtwinters', 'pattern', 'naive', 'sarima', 'prophet')
+        metodi = ('holtwinters', 'pattern', 'naive', 'sarima', 'prophet', 'tbats', 'intraday_dinamico')
 
     risultati = {}
     confronto_frames = []
@@ -1086,6 +1354,16 @@ def genera_forecast_modelli(df, output_dir, giorni_forecast=28, metodi=None):
             if risultati[metodo] is not None:
                 actual_path = _salva_forecast_excel(output_dir, 'forecast_prophet.xlsx', risultati[metodo])
                 print(f"   Forecast Prophet salvato: {actual_path.name}")
+        elif metodo == 'tbats':
+            risultati[metodo] = _forecast_tbats(df, giorni_forecast, produce_outputs=True)
+            if risultati[metodo] is not None:
+                actual_path = _salva_forecast_excel(output_dir, 'forecast_tbats.xlsx', risultati[metodo])
+                print(f"   Forecast TBATS salvato: {actual_path.name}")
+        elif metodo == 'intraday_dinamico':
+            risultati[metodo] = _forecast_intraday_dinamico(df, giorni_forecast, produce_outputs=True)
+            if risultati[metodo] is not None:
+                actual_path = _salva_forecast_excel(output_dir, 'forecast_intraday_dinamico.xlsx', risultati[metodo])
+                print(f"   Forecast Intraday Dinamico salvato: {actual_path.name}")
         else:
             print(f"   Metodo forecast '{metodo}' non riconosciuto, ignorato.")
             risultati[metodo] = None
@@ -1106,7 +1384,65 @@ def genera_forecast_modelli(df, output_dir, giorni_forecast=28, metodi=None):
                                                {'giornaliero': confronto})
         print(f"   Confronto modelli salvato: {confronto_path.name}")
 
+        # Genera grafico di confronto
+        _genera_grafico_confronto_modelli(confronto, output_dir)
+
     return risultati
+
+
+def _genera_grafico_confronto_modelli(confronto_df, output_dir):
+    """Genera un grafico comparativo tra tutti i modelli di forecast."""
+    fig, axes = plt.subplots(2, 1, figsize=(16, 10))
+
+    # Grafico 1: Linee per ogni modello
+    metodi_cols = [col for col in confronto_df.columns if col != 'DATA']
+    colors_map = {
+        'holtwinters': '#2E86AB',
+        'prophet': '#A23B72',
+        'tbats': '#F18F01',
+        'sarima': '#C73E1D',
+        'pattern': '#6A994E',
+        'naive': '#BC4B51',
+        'intraday_dinamico': '#8B5CF6'
+    }
+
+    for metodo in metodi_cols:
+        if metodo in confronto_df.columns:
+            color = colors_map.get(metodo, np.random.rand(3,))
+            axes[0].plot(confronto_df['DATA'], confronto_df[metodo],
+                        label=metodo.upper(), linewidth=2, marker='o', markersize=3,
+                        color=color, alpha=0.8)
+
+    axes[0].set_title('Confronto Forecast tra Modelli', fontsize=14, fontweight='bold')
+    axes[0].set_xlabel('Data')
+    axes[0].set_ylabel('Chiamate Previste')
+    axes[0].legend(loc='best')
+    axes[0].grid(True, alpha=0.3)
+    axes[0].tick_params(axis='x', rotation=45)
+
+    # Grafico 2: Deviazione dalla media dei modelli
+    confronto_numeric = confronto_df[metodi_cols]
+    media_modelli = confronto_numeric.mean(axis=1)
+
+    for metodo in metodi_cols:
+        if metodo in confronto_df.columns:
+            deviazione = ((confronto_df[metodo] - media_modelli) / media_modelli * 100)
+            color = colors_map.get(metodo, np.random.rand(3,))
+            axes[1].plot(confronto_df['DATA'], deviazione,
+                        label=metodo.upper(), linewidth=2, alpha=0.7, color=color)
+
+    axes[1].axhline(0, color='black', linestyle='--', linewidth=1)
+    axes[1].set_title('Deviazione % dalla Media dei Modelli', fontsize=14, fontweight='bold')
+    axes[1].set_xlabel('Data')
+    axes[1].set_ylabel('Deviazione %')
+    axes[1].legend(loc='best')
+    axes[1].grid(True, alpha=0.3)
+    axes[1].tick_params(axis='x', rotation=45)
+
+    plt.tight_layout()
+    plt.savefig(f'{output_dir}/confronto_modelli_forecast.png', dpi=300, bbox_inches='tight')
+    print(f"   Grafico confronto modelli salvato: confronto_modelli_forecast.png")
+    plt.close()
 
 
 def genera_forecast_avanzato(df, output_dir, giorni_forecast=28):
@@ -1478,7 +1814,7 @@ def main(file_path=None, output_dir='output', giorni_forecast=28):
             df,
             output_full_path,
             giorni_forecast=giorni_forecast,
-            metodi=('holtwinters', 'pattern', 'naive', 'sarima', 'prophet')
+            metodi=('holtwinters', 'pattern', 'naive', 'sarima', 'prophet', 'tbats', 'intraday_dinamico')
         )
         forecast_completo = forecast_modelli.get('holtwinters')
         if forecast_completo is None:
@@ -1519,7 +1855,12 @@ def main(file_path=None, output_dir='output', giorni_forecast=28):
         print("    - valutazione_forecast.xlsx (backtest Holt-Winters)")
         print("    - forecast_pattern.xlsx")
         print("    - forecast_naive.xlsx")
+        print("    - forecast_sarima.xlsx (SARIMA con stagionalità settimanale)")
+        print("    - forecast_prophet.xlsx (✨ NUOVO: Prophet con festività italiane)")
+        print("    - forecast_tbats.xlsx (✨ NUOVO: TBATS multiple stagionalità)")
+        print("    - forecast_intraday_dinamico.xlsx (✨ NUOVO: Forecast per fascia dinamico)")
         print("    - forecast_confronto_modelli.xlsx")
+        print("    - confronto_modelli_forecast.png (✨ NUOVO: Grafico comparativo)")
         print("\n  DASHBOARD:")
         print("    - dashboard_completa.xlsx")
         print("    - report_statistico.txt")
@@ -1536,15 +1877,29 @@ def main(file_path=None, output_dir='output', giorni_forecast=28):
         raise
 
 if __name__ == "__main__":
-    print("Verifica librerie:")
-    print(f"  scipy: {'OK' if SCIPY_AVAILABLE else 'MANCANTE'}")
-    print(f"  scikit-learn: {'OK' if SKLEARN_AVAILABLE else 'MANCANTE'}")
-    print(f"  statsmodels: {'OK' if STATSMODELS_AVAILABLE else 'MANCANTE (pip install statsmodels)'}")
-    
+    print("=" * 80)
+    print("VERIFICA LIBRERIE DISPONIBILI")
+    print("=" * 80)
+    print(f"  pandas/numpy/matplotlib: ✅ OK (obbligatorie)")
+    print(f"  scipy: {'✅ OK' if SCIPY_AVAILABLE else '❌ MANCANTE'}")
+    print(f"  scikit-learn: {'✅ OK' if SKLEARN_AVAILABLE else '❌ MANCANTE'}")
+    print(f"  statsmodels: {'✅ OK' if STATSMODELS_AVAILABLE else '❌ MANCANTE (pip install statsmodels)'}")
+    print(f"  tbats: {'✅ OK' if TBATS_AVAILABLE else '⚠️  OPZIONALE (pip install tbats)'}")
+    print()
+
     if not STATSMODELS_AVAILABLE:
-        print("\nATTENZIONE: Per forecast Holt-Winters ottimale installa statsmodels:")
+        print("⚠️  ATTENZIONE: Per forecast Holt-Winters/SARIMA ottimale installa statsmodels:")
         print("  pip install statsmodels")
         print("Verra' usato un metodo fallback comunque funzionante.\n")
+
+    if not TBATS_AVAILABLE:
+        print("💡 SUGGERIMENTO: Per forecast con multiple stagionalità (TBATS):")
+        print("  pip install tbats")
+        print("TBATS è particolarmente efficace per call center con pattern complessi.\n")
+
+    print("📦 Per installare tutte le dipendenze opzionali:")
+    print("  pip install statsmodels tbats prophet holidays")
+    print("=" * 80 + "\n")
     
     print("\n" + "=" * 80)
     print("CONFIGURAZIONE FORECAST")
