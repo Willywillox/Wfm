@@ -929,7 +929,17 @@ def _forecast_intraday_dinamico(df, giorni_forecast=28, produce_outputs=False):
     """
     if not STATSMODELS_AVAILABLE:
         if produce_outputs:
-            print("   Forecast intraday dinamico richiede statsmodels")
+            print("   ⚠️  Forecast intraday dinamico richiede statsmodels (pip install statsmodels)")
+        return None
+
+    if giorni_forecast <= 0:
+        if produce_outputs:
+            print(f"   ⚠️  Giorni forecast non valido: {giorni_forecast}")
+        return None
+
+    if len(df) < 100:  # Minimo dati per avere senso
+        if produce_outputs:
+            print(f"   ⚠️  Intraday dinamico richiede almeno 100 record, presenti solo {len(df)} record")
         return None
 
     try:
@@ -1249,11 +1259,19 @@ def _forecast_tbats(df, giorni_forecast=28, produce_outputs=False):
     """
     if not TBATS_AVAILABLE:
         if produce_outputs:
-            print("   TBATS non installato, modello TBATS saltato")
+            print("   ⚠️  TBATS non installato (pip install tbats), modello TBATS saltato")
         return None
 
     daily = df.groupby('DATA').agg({'OFFERTO': 'sum'}).reset_index().sort_values('DATA')
+
     if daily.empty or giorni_forecast <= 0:
+        if produce_outputs:
+            print(f"   ⚠️  Dati insufficienti per TBATS (giorni: {len(daily)}, forecast: {giorni_forecast})")
+        return None
+
+    if len(daily) < 21:  # Minimo 3 settimane
+        if produce_outputs:
+            print(f"   ⚠️  TBATS richiede almeno 21 giorni di dati, presenti solo {len(daily)} giorni")
         return None
 
     try:
@@ -1355,15 +1373,21 @@ def genera_forecast_modelli(df, output_dir, giorni_forecast=28, metodi=None):
                 actual_path = _salva_forecast_excel(output_dir, 'forecast_prophet.xlsx', risultati[metodo])
                 print(f"   Forecast Prophet salvato: {actual_path.name}")
         elif metodo == 'tbats':
+            print(f"   Avvio TBATS...")
             risultati[metodo] = _forecast_tbats(df, giorni_forecast, produce_outputs=True)
             if risultati[metodo] is not None:
                 actual_path = _salva_forecast_excel(output_dir, 'forecast_tbats.xlsx', risultati[metodo])
-                print(f"   Forecast TBATS salvato: {actual_path.name}")
+                print(f"   ✅ Forecast TBATS salvato: {actual_path.name}")
+            else:
+                print(f"   ⚠️  TBATS non generato (verifica messaggi sopra)")
         elif metodo == 'intraday_dinamico':
+            print(f"   Avvio Forecast Intraday Dinamico...")
             risultati[metodo] = _forecast_intraday_dinamico(df, giorni_forecast, produce_outputs=True)
             if risultati[metodo] is not None:
                 actual_path = _salva_forecast_excel(output_dir, 'forecast_intraday_dinamico.xlsx', risultati[metodo])
-                print(f"   Forecast Intraday Dinamico salvato: {actual_path.name}")
+                print(f"   ✅ Forecast Intraday Dinamico salvato: {actual_path.name}")
+            else:
+                print(f"   ⚠️  Forecast Intraday Dinamico non generato (verifica messaggi sopra)")
         else:
             print(f"   Metodo forecast '{metodo}' non riconosciuto, ignorato.")
             risultati[metodo] = None
