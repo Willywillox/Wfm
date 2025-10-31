@@ -90,10 +90,14 @@ except ImportError:
 try:
     from tbats import TBATS
     TBATS_AVAILABLE = True
-except ImportError:
+except (ImportError, ValueError) as e:
     TBATS_AVAILABLE = False
-    print("NOTA: TBATS non disponibile (opzionale)")
-    print("Per multiple stagionalità avanzate: pip install tbats")
+    if 'numpy.dtype size changed' in str(e):
+        print("⚠️  TBATS: Errore compatibilità numpy/pmdarima")
+        print("Soluzione: pip uninstall -y tbats pmdarima && pip install --no-cache-dir tbats")
+    else:
+        print("NOTA: TBATS non disponibile (opzionale)")
+        print("Per multiple stagionalità avanzate: pip install tbats")
 
 # Configurazione grafica
 plt.rcParams['figure.figsize'] = (15, 8)
