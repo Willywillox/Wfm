@@ -88,16 +88,29 @@ except ImportError:
     print("Per forecast avanzato installa: pip install statsmodels")
 
 try:
+    import sys
+    print(f"DEBUG: Python executable: {sys.executable}")
+    print(f"DEBUG: Tentativo import TBATS...")
     from tbats import TBATS
     TBATS_AVAILABLE = True
+    print(f"DEBUG: ✅ TBATS importato con successo!")
+    print(f"DEBUG: TBATS location: {TBATS.__module__}")
 except (ImportError, ValueError) as e:
     TBATS_AVAILABLE = False
+    print(f"DEBUG: ❌ TBATS import fallito")
+    print(f"DEBUG: Tipo errore: {type(e).__name__}")
+    print(f"DEBUG: Messaggio: {str(e)[:200]}")
     if 'numpy.dtype size changed' in str(e):
         print("⚠️  TBATS: Errore compatibilità numpy/pmdarima")
         print("Soluzione: pip uninstall -y tbats pmdarima && pip install --no-cache-dir tbats")
     else:
         print("NOTA: TBATS non disponibile (opzionale)")
         print("Per multiple stagionalità avanzate: pip install tbats")
+except Exception as e:
+    TBATS_AVAILABLE = False
+    print(f"DEBUG: ❌ TBATS errore inaspettato: {type(e).__name__}: {e}")
+    import traceback
+    traceback.print_exc()
 
 # Configurazione grafica
 plt.rcParams['figure.figsize'] = (15, 8)
