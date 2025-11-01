@@ -737,7 +737,8 @@ def assegnazione_tight_capacity(
                 penalty = abs(gap)
                 damp = 18.0 if effective_allow else 42.0
                 if demand <= 0:
-                    damp *= 3.0
+                    # Penalità molto alta per evitare di coprire slot a zero requisiti
+                    damp = 500.0
                 score -= penalty * damp
         projected_overcap = day_overcap_used[day] + extra_overcap
         limit = overcap_limit.get(day, 0.0)
@@ -852,6 +853,38 @@ def assegnazione_tight_capacity(
 
     giorni_validi = [g for g in giorni if g not in zero_demand_days]
 
+    # Validazione input: verifica che ogni slot con domanda > 0 abbia almeno un dipendente disponibile
+    validation_warnings = []
+    for day in giorni_validi:
+        for slot in slot_list:
+            demand = demand_by_slot[day].get(slot, 0.0)
+            if demand <= 0:
+                continue
+
+            # Verifica se almeno un dipendente ha un turno che copre questo slot
+            has_coverage_potential = False
+            for emp in ris['id dipendente']:
+                if day in forced_off.get(emp, set()):
+                    continue
+                for sid in shift_by_emp.get(emp, []):
+                    if slot in shift_slots.get(sid, []):
+                        has_coverage_potential = True
+                        break
+                if has_coverage_potential:
+                    break
+
+            if not has_coverage_potential:
+                slot_time = _from_minutes(slot)
+                validation_warnings.append(
+                    f"CRITICO: {day} fascia {slot_time} ha domanda {demand:.1f} ma NESSUN dipendente disponibile in quella fascia oraria"
+                )
+
+    if validation_warnings:
+        print("\n⚠️  VALIDAZIONE INPUT - PROBLEMI RILEVATI:")
+        for warn in validation_warnings:
+            print(f"  • {warn}")
+        print("\n💡 SUGGERIMENTO: Verifica il foglio Risorse e assicurati che ci siano dipendenti con disponibilità oraria (Inizio/Fine fascia) che coprano TUTTE le fasce con requisiti > 0\n")
+
     for day in giorni_validi:
         must = [emp for emp in ris['id dipendente'] if day in forced_on.get(emp, set())]
         for emp in sorted(must, key=lambda e: days_done[e]):
@@ -884,7 +917,8 @@ def assegnazione_tight_capacity(
         critical_gaps.sort(reverse=True)
 
         progressed = False
-        for _, day, target_slot in critical_gaps[:20]:
+        # Aumentato da 20 a 100 per considerare più gap critici (es. ultima fascia con domanda bassa)
+        for _, day, target_slot in critical_gaps[:100]:
             candidates = []
             for emp in remaining_people():
                 if (emp, day) in assigned_once or day in forced_off.get(emp, set()):
@@ -1021,6 +1055,64 @@ def assegnazione_tight_capacity(
                 break
 
     ensure_required_days()
+
+    def enforce_critical_coverage():
+        """
+        Garantisce che ogni slot con domanda > 0 abbia almeno 1 persona assegnata.
+        Questa funzione viene eseguita dopo il loop principale per fixare gap critici.
+        """
+        print("\n🎯 COVERAGE ENFORCEMENT - Verifica fasce scoperte...")
+
+        uncovered_slots = []
+        for day in giorni_validi:
+            for slot in slot_list:
+                demand = demand_by_slot[day].get(slot, 0.0)
+                if demand > 0 and current_coverage[day][slot] == 0:
+                    uncovered_slots.append((day, slot, demand))
+
+        if not uncovered_slots:
+            print("   ✓ Tutte le fasce con requisiti sono coperte")
+            return
+
+        print(f"   ⚠️  Trovate {len(uncovered_slots)} fasce con domanda > 0 ma copertura = 0")
+
+        fixes_applied = 0
+        for day, slot, demand in uncovered_slots:
+            slot_time = _from_minutes(slot)
+            print(f"   → Tentativo fix: {day} {slot_time} (domanda {demand:.1f})")
+
+            # Cerca dipendenti che possono coprire questo slot
+            candidates = []
+            for emp in ris['id dipendente']:
+                if (emp, day) in assigned_once:
+                    continue  # Già assegnato in questo giorno
+                if day in forced_off.get(emp, set()):
+                    continue  # Forzato OFF in questo giorno
+
+                for sid in shift_by_emp.get(emp, []):
+                    if slot in shift_slots.get(sid, []):
+                        # Calcola score anche se può causare overcap
+                        val = shift_value(emp, day, sid, allow_overcapacity=True, force_any=True)
+                        need = work_need[emp] - days_done[emp]
+                        candidates.append((need, val, -shift_start_min[sid], emp, sid))
+
+            if not candidates:
+                print(f"      ✗ Nessun dipendente disponibile per coprire questo slot")
+                infeasible.append((f"Slot {day} {slot_time}", f"Domanda {demand:.1f} ma nessun dipendente disponibile"))
+                continue
+
+            # Priorità a chi ha ancora giorni da lavorare, poi miglior score
+            candidates.sort(reverse=True)
+            _, _, _, emp, sid = candidates[0]
+
+            apply_assignment(emp, day, sid, forced=True)
+            fixes_applied += 1
+            print(f"      ✓ Assegnato {emp} con turno {sid}")
+
+        if fixes_applied > 0:
+            print(f"   ✓ Applicate {fixes_applied} assegnazioni forzate per garantire copertura critica\n")
+
+    enforce_critical_coverage()
 
     def allocate_overtime():
         """
@@ -1266,10 +1358,10 @@ def assegnazione_tight_capacity(
                 
             _, _, best_start = best
             cur = best_start
-        for _ in range(steps):
-            meta['extra_slots'].add(cur)
-            update_coverage(day, cur, 1)
-            cur += slot_size
+            for _ in range(steps):
+                meta['extra_slots'].add(cur)
+                update_coverage(day, cur, 1)
+                cur += slot_size
             meta['ot_detached_start_min'] = best_start
             meta['ot_detached_end_min'] = best_start + steps * slot_size
             recompute_total_ot(meta)
