@@ -1696,9 +1696,8 @@ def assegnazione_tight_capacity(
             slot = positive_slots[0]
             candidate = None
 
-            # Prova 1: Cerca dipendenti con 0 weekend, permetti gap infrasettimanale fino a -3.0
-            max_weekend_allowed = 1 if iteration < max_iter // 2 else 2  # Più permissivo dopo metà iterazioni
-            allowed_gap = -3.0  # MOLTO PIÙ PERMISSIVO: permetti calo fino a 3 persone sotto domanda
+            # Cerca dipendenti per swap, priorità a chi ha meno weekend
+            max_weekend_allowed = 1 if iteration < max_iter // 2 else 2
 
             for emp in sorted(ris['id dipendente'], key=lambda e: (len(weekend_work[e]), days_done[e])):
                 if (emp, target_day) in assigned_once:
@@ -1709,25 +1708,31 @@ def assegnazione_tight_capacity(
                     continue
 
                 removable = None
-                # Cerca il giorno infrasettimanale MENO critico da rimuovere
                 best_removal_score = None
 
                 for day_existing, sid_existing in list(assignments_by_emp[emp].items()):
                     if day_existing == target_day or day_existing in weekend_days:
                         continue
 
-                    # Calcola quanto è critico rimuovere questo turno
-                    # Score = minimo gap che si creerebbe (più negativo = più critico)
-                    min_gap_after_removal = float('inf')
-                    for s in shift_slots[sid_existing]:
-                        gap_after = current_coverage[day_existing][s] - 1 - demand_by_slot[day_existing].get(s, 0.0)
-                        min_gap_after_removal = min(min_gap_after_removal, gap_after)
+                    # NUOVA LOGICA: Permetti rimozione se dopo c'è ALMENO 1 persona su quella fascia
+                    can_remove = True
+                    min_coverage_after = float('inf')
 
-                    # PRIORITÀ ASSOLUTA PRESIDIO: permetti rimozione anche se crea gap negativo
-                    if min_gap_after_removal >= allowed_gap:
-                        # Scegli il turno meno critico (gap meno negativo)
-                        if best_removal_score is None or min_gap_after_removal > best_removal_score:
-                            best_removal_score = min_gap_after_removal
+                    for s in shift_slots[sid_existing]:
+                        coverage_after = current_coverage[day_existing][s] - 1
+                        demand = demand_by_slot[day_existing].get(s, 0.0)
+
+                        # Se rimuovendo si scende a 0 persone su fascia con requisiti > 0 → BLOCCO
+                        if demand > 0 and coverage_after <= 0:
+                            can_remove = False
+                            break
+
+                        min_coverage_after = min(min_coverage_after, coverage_after)
+
+                    if can_remove:
+                        # Preferisci rimuovere turni che lasciano più copertura residua
+                        if best_removal_score is None or min_coverage_after > best_removal_score:
+                            best_removal_score = min_coverage_after
                             removable = (day_existing, sid_existing)
 
                 if removable is None:
@@ -1778,9 +1783,8 @@ def assegnazione_tight_capacity(
             slot = positive_slots[0]
             candidate = None
 
-            # Prova 1: Cerca dipendenti con 0-1 weekend, permetti gap infrasettimanale fino a -3.0
+            # Cerca dipendenti per swap, priorità a chi ha meno weekend
             max_weekend_allowed = 1 if iteration < max_iter // 2 else 2
-            allowed_gap = -3.0  # MOLTO PIÙ PERMISSIVO: permetti calo fino a 3 persone sotto domanda
 
             for emp in sorted(ris['id dipendente'], key=lambda e: (len(weekend_work[e]), days_done[e])):
                 if (emp, target_day) in assigned_once:
@@ -1791,24 +1795,31 @@ def assegnazione_tight_capacity(
                     continue
 
                 removable = None
-                # Cerca il giorno infrasettimanale MENO critico da rimuovere
                 best_removal_score = None
 
                 for day_existing, sid_existing in list(assignments_by_emp[emp].items()):
                     if day_existing == target_day or day_existing in weekend_days:
                         continue
 
-                    # Calcola quanto è critico rimuovere questo turno
-                    min_gap_after_removal = float('inf')
-                    for s in shift_slots[sid_existing]:
-                        gap_after = current_coverage[day_existing][s] - 1 - demand_by_slot[day_existing].get(s, 0.0)
-                        min_gap_after_removal = min(min_gap_after_removal, gap_after)
+                    # NUOVA LOGICA: Permetti rimozione se dopo c'è ALMENO 1 persona su quella fascia
+                    can_remove = True
+                    min_coverage_after = float('inf')
 
-                    # PRIORITÀ ASSOLUTA PRESIDIO: permetti rimozione anche se crea gap negativo
-                    if min_gap_after_removal >= allowed_gap:
-                        # Scegli il turno meno critico (gap meno negativo)
-                        if best_removal_score is None or min_gap_after_removal > best_removal_score:
-                            best_removal_score = min_gap_after_removal
+                    for s in shift_slots[sid_existing]:
+                        coverage_after = current_coverage[day_existing][s] - 1
+                        demand = demand_by_slot[day_existing].get(s, 0.0)
+
+                        # Se rimuovendo si scende a 0 persone su fascia con requisiti > 0 → BLOCCO
+                        if demand > 0 and coverage_after <= 0:
+                            can_remove = False
+                            break
+
+                        min_coverage_after = min(min_coverage_after, coverage_after)
+
+                    if can_remove:
+                        # Preferisci rimuovere turni che lasciano più copertura residua
+                        if best_removal_score is None or min_coverage_after > best_removal_score:
+                            best_removal_score = min_coverage_after
                             removable = (day_existing, sid_existing)
 
                 if removable is None:
@@ -1869,7 +1880,6 @@ def assegnazione_tight_capacity(
             print(f"   → Gap su {target_day}: {total_gap_value:.2f} persone mancanti")
 
             candidate = None
-            allowed_gap = -3.0  # Permetti gap fino a 3 persone
 
             for emp in sorted(ris['id dipendente'], key=lambda e: (len(weekend_work[e]), days_done[e])):
                 if (emp, target_day) in assigned_once:
@@ -1884,15 +1894,26 @@ def assegnazione_tight_capacity(
                     if day_existing == target_day:
                         continue
 
-                    # Calcola criticità rimozione
-                    min_gap_after_removal = float('inf')
-                    for s in shift_slots[sid_existing]:
-                        gap_after = current_coverage[day_existing][s] - 1 - demand_by_slot[day_existing].get(s, 0.0)
-                        min_gap_after_removal = min(min_gap_after_removal, gap_after)
+                    # NUOVA LOGICA: Permetti rimozione se dopo c'è ALMENO 1 persona su quella fascia
+                    # (invece di limite arbitrario di gap)
+                    can_remove = True
+                    min_coverage_after = float('inf')
 
-                    if min_gap_after_removal >= allowed_gap:
-                        if best_removal_score is None or min_gap_after_removal > best_removal_score:
-                            best_removal_score = min_gap_after_removal
+                    for s in shift_slots[sid_existing]:
+                        coverage_after = current_coverage[day_existing][s] - 1
+                        demand = demand_by_slot[day_existing].get(s, 0.0)
+
+                        # Se rimuovendo questo turno si scende a 0 persone su una fascia con requisiti > 0
+                        if demand > 0 and coverage_after <= 0:
+                            can_remove = False  # BLOCCO: violerebbe presidio
+                            break
+
+                        min_coverage_after = min(min_coverage_after, coverage_after)
+
+                    if can_remove:
+                        # Preferisci rimuovere turni che lasciano più copertura residua
+                        if best_removal_score is None or min_coverage_after > best_removal_score:
+                            best_removal_score = min_coverage_after
                             removable = (day_existing, sid_existing)
 
                 if removable is None:
