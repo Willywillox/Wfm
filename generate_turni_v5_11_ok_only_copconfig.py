@@ -762,6 +762,13 @@ def assegnazione_tight_capacity(
         return score
 
     def apply_assignment(emp: str, day: str, sid: str, forced: bool = False) -> None:
+        # SAFETY CHECK: VINCOLO HARD - Non violare riposi obbligatori
+        if days_done[emp] >= work_need[emp]:
+            error_msg = f"ERRORE CRITICO: Tentativo di assegnare {emp} al giorno {day} ma ha già raggiunto i giorni massimi ({work_need[emp]}). Riposi obbligatori violati!"
+            print(f"\n⚠️  {error_msg}")
+            infeasible.append((emp, error_msg))
+            return  # NON assegnare
+
         assignments.append((emp, day, sid))
         assignments_by_emp.setdefault(emp, {})[day] = sid
         assignment_details[(emp, day)] = {
@@ -1082,6 +1089,7 @@ def assegnazione_tight_capacity(
             print(f"   → Tentativo fix: {day} {slot_time} (domanda {demand:.1f})")
 
             # Cerca dipendenti che possono coprire questo slot
+            # VINCOLO HARD: SOLO dipendenti con giorni ancora disponibili (need > 0)
             candidates = []
             for emp in ris['id dipendente']:
                 if (emp, day) in assigned_once:
@@ -1089,25 +1097,29 @@ def assegnazione_tight_capacity(
                 if day in forced_off.get(emp, set()):
                     continue  # Forzato OFF in questo giorno
 
+                need = work_need[emp] - days_done[emp]
+                if need <= 0:
+                    continue  # CRITICO: NON violare riposi obbligatori!
+
                 for sid in shift_by_emp.get(emp, []):
                     if slot in shift_slots.get(sid, []):
                         # Calcola score anche se può causare overcap
                         val = shift_value(emp, day, sid, allow_overcapacity=True, force_any=True)
-                        need = work_need[emp] - days_done[emp]
                         candidates.append((need, val, -shift_start_min[sid], emp, sid))
 
             if not candidates:
-                print(f"      ✗ Nessun dipendente disponibile per coprire questo slot")
-                infeasible.append((f"Slot {day} {slot_time}", f"Domanda {demand:.1f} ma nessun dipendente disponibile"))
+                print(f"      ✗ Nessun dipendente disponibile con giorni rimanenti")
+                infeasible.append((f"Slot {day} {slot_time}",
+                    f"Domanda {demand:.1f} ma nessun dipendente disponibile SENZA violare riposi obbligatori"))
                 continue
 
             # Priorità a chi ha ancora giorni da lavorare, poi miglior score
             candidates.sort(reverse=True)
-            _, _, _, emp, sid = candidates[0]
+            need, _, _, emp, sid = candidates[0]
 
             apply_assignment(emp, day, sid, forced=True)
             fixes_applied += 1
-            print(f"      ✓ Assegnato {emp} con turno {sid}")
+            print(f"      ✓ Assegnato {emp} con turno {sid} (giorni rimanenti: {need})")
 
         if fixes_applied > 0:
             print(f"   ✓ Applicate {fixes_applied} assegnazioni forzate per garantire copertura critica\n")
@@ -1813,6 +1825,54 @@ def assegnazione_tight_capacity(
     preferred = sum(minute_distribution.get(m, 0) for m in prefer_set)
     if total_assignments:
         print(f"Turni ai minuti preferiti {tuple(sorted(prefer_set))}: {preferred}/{total_assignments} ({preferred/total_assignments*100:.1f}%)")
+
+    # ==================== VALIDAZIONE FINALE VINCOLI HARD ====================
+    print("\n" + "="*80)
+    print("🔒 VALIDAZIONE VINCOLI HARD OBBLIGATORI")
+    print("="*80)
+
+    violations = []
+
+    # 1. Verifica riposi obbligatori
+    for emp in ris['id dipendente']:
+        actual_days = days_done[emp]
+        required_days = work_need[emp]
+        if actual_days > required_days:
+            violations.append(f"⛔ {emp}: lavora {actual_days} giorni ma dovrebbe lavorare MAX {required_days} (riposi violati!)")
+            infeasible.append((emp, f"VIOLAZIONE RIPOSI: lavora {actual_days} giorni invece di {required_days}"))
+
+    # 2. Verifica ore/giorno (durata turni)
+    for emp, day, sid in assignments:
+        actual_duration = shift_end_min[sid] - shift_start_min[sid]
+        required_duration = durations_by_emp.get(emp, 240)
+        if actual_duration != required_duration:
+            violations.append(f"⛔ {emp} {day}: turno {actual_duration}min invece di {required_duration}min richiesti")
+
+    # 3. Verifica straordinario non superi il disponibile
+    for emp in ris['id dipendente']:
+        total_ot_assigned = 0
+        for (e, d), meta in assignment_details.items():
+            if e == emp:
+                total_ot_assigned += meta.get('total_ot_minutes', 0)
+
+        available_ot = ot_minutes_by_emp.get(emp, 0)
+        if total_ot_assigned > available_ot + 1:  # +1 per tolleranza arrotondamento
+            violations.append(f"⛔ {emp}: straordinario {total_ot_assigned}min supera disponibile {available_ot}min")
+
+    if violations:
+        print("\n⚠️  VIOLAZIONI RILEVATE:")
+        for v in violations:
+            print(f"  {v}")
+        print("\n⚠️  IL FILE OUTPUT CONTIENE VIOLAZIONI DI VINCOLI OBBLIGATORI!")
+        print("💡 Verifica i dati di input o disabilita coverage enforcement")
+    else:
+        print("\n✅ Tutti i vincoli hard rispettati:")
+        print("   • Riposi obbligatori: OK")
+        print("   • Ore/giorno contrattuale: OK")
+        print("   • Straordinario disponibile: OK")
+
+    print("="*80 + "\n")
+    # ========================================================================
 
     return assignments, riposi_info, infeasible, day_colmap, slot_list, slot_size, shift_slots, assignment_details, ot_minutes_used
 
