@@ -1742,6 +1742,17 @@ def assegnazione_tight_capacity(
                 for sid_new in shift_by_emp.get(emp, []):
                     if slot not in shift_slots.get(sid_new, []):
                         continue
+
+                    # VERIFICA CRITICA: il nuovo turno NON deve coprire slot a zero requisiti
+                    covers_zero_slot = False
+                    for s in shift_slots.get(sid_new, []):
+                        if demand_by_slot[target_day].get(s, 0.0) <= 0:
+                            covers_zero_slot = True
+                            break
+
+                    if covers_zero_slot:
+                        continue  # Salta questo turno, cerca altro
+
                     candidate = (emp, day_remove, sid_remove, sid_new)
                     break
 
@@ -1829,6 +1840,17 @@ def assegnazione_tight_capacity(
                 for sid_new in shift_by_emp.get(emp, []):
                     if slot not in shift_slots.get(sid_new, []):
                         continue
+
+                    # VERIFICA CRITICA: il nuovo turno NON deve coprire slot a zero requisiti
+                    covers_zero_slot = False
+                    for s in shift_slots.get(sid_new, []):
+                        if demand_by_slot[target_day].get(s, 0.0) <= 0:
+                            covers_zero_slot = True
+                            break
+
+                    if covers_zero_slot:
+                        continue  # Salta questo turno, cerca altro
+
                     candidate = (emp, day_remove, sid_remove, sid_new)
                     break
 
@@ -1923,6 +1945,17 @@ def assegnazione_tight_capacity(
                 for sid_new in shift_by_emp.get(emp, []):
                     if target_slot not in shift_slots.get(sid_new, []):
                         continue
+
+                    # VERIFICA CRITICA: il nuovo turno NON deve coprire slot a zero requisiti
+                    covers_zero_slot = False
+                    for s in shift_slots.get(sid_new, []):
+                        if demand_by_slot[target_day].get(s, 0.0) <= 0:
+                            covers_zero_slot = True
+                            break
+
+                    if covers_zero_slot:
+                        continue  # Salta questo turno, cerca altro
+
                     candidate = (emp, day_remove, sid_remove, sid_new)
                     break
 
