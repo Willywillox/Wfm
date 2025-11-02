@@ -722,6 +722,14 @@ def assegnazione_tight_capacity(
         if not force_any and en <= mds:
             return -1e4
 
+        # VINCOLO HARD: BLOCCA turni che non si estendono fino alla fine del periodo con domanda
+        # Questo impedisce che turni tipo 16:45-20:45 vengano selezionati quando ci sono requisiti fino alle 21:00
+        mde = max_demand_end.get(day, 24 * 60)
+        if not force_any and mde < 24 * 60:
+            # Se il turno finisce prima della fine del periodo con domanda (anche di 1 slot), BLOCCA
+            if en < mde:
+                return -1e10
+
         # VINCOLO HARD: BLOCCA completamente turni che coprono anche 1 solo slot a zero requisiti
         if not force_any:
             for slot in shift_slots.get(sid, []):
@@ -761,19 +769,6 @@ def assegnazione_tight_capacity(
             if buffer_room > 0:
                 score += min(buffer_room, 2.0) * 6.0
         score += minute_preference_score(st)
-
-        # PENALITÀ: Turni che non si estendono fino alla fine del periodo con domanda
-        # Questo evita che turni tipo 16:45-20:45 vengano preferiti a 17:00-21:00
-        # quando ci sono requisiti fino alle 21:00
-        mde = max_demand_end.get(day, 24 * 60)
-        if mde < 24 * 60:  # C'è una fine specifica per la domanda
-            # Calcola quanti minuti mancano per raggiungere la fine della domanda
-            gap_from_end = mde - en
-            if gap_from_end >= slot_size:  # Turno finisce prima della fine domanda (anche di 1 slot esatto)
-                # Penalità proporzionale ai slot mancanti
-                slots_missed = gap_from_end / slot_size
-                score -= slots_missed * 300.0  # Penalità pesante per non coprire fino alla fine
-
         score += day_balance_bonus(day)
         score += weekend_bonus(emp, day, projected_overcap)
         if force_any and score <= -1e4 + 1e-3:
