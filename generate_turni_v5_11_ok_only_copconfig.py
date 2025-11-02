@@ -721,6 +721,15 @@ def assegnazione_tight_capacity(
             return -1e4
         if not force_any and en <= mds:
             return -1e4
+
+        # VINCOLO HARD: BLOCCA completamente turni che coprono anche 1 solo slot a zero requisiti
+        if not force_any:
+            for slot in shift_slots.get(sid, []):
+                demand = demand_by_slot[day].get(slot, 0.0)
+                if demand <= 0.0:
+                    # BLOCCO ASSOLUTO: MAI assegnare turni su slot a zero requisiti
+                    return -1e10
+
         score = 0.0
         extra_overcap = 0.0
         effective_allow = allow_overcapacity or force_any
@@ -736,9 +745,6 @@ def assegnazione_tight_capacity(
             else:
                 penalty = abs(gap)
                 damp = 18.0 if effective_allow else 42.0
-                if demand <= 0:
-                    # Penalità molto alta per evitare di coprire slot a zero requisiti
-                    damp = 500.0
                 score -= penalty * damp
         projected_overcap = day_overcap_used[day] + extra_overcap
         limit = overcap_limit.get(day, 0.0)
@@ -1827,11 +1833,97 @@ def assegnazione_tight_capacity(
             remove_assignment(emp, day_remove)
             apply_assignment(emp, target_day, sid_new)
 
-    fill_saturday_gap()
-    fill_sunday_gap()
+    def fill_all_critical_gaps(max_iter=500):
+        """
+        PRIORITÀ ASSOLUTA: Garantire presidio su TUTTI i giorni con requisiti > 0.
+        Non solo weekend, ma QUALSIASI giorno (Lun-Dom).
+        Fa swap aggressivi per coprire fasce scoperte.
+        """
+        print(f"\n🎯 FILL ALL CRITICAL GAPS - Garantire presidio su TUTTI i giorni...")
+
+        for iteration in range(max_iter):
+            # Trova TUTTI i giorni con gap > 0
+            days_with_gaps = []
+            for day in giorni_validi:
+                gap_data = [
+                    (slot, demand_by_slot[day].get(slot, 0.0) - current_coverage[day][slot])
+                    for slot in slot_list
+                ]
+                positive_slots = [slot for slot, gap in gap_data if gap > 0.1]
+                total_gap = sum(gap for _, gap in gap_data if gap > 0.1)
+
+                if total_gap > 0.1:
+                    days_with_gaps.append((total_gap, day, positive_slots[0] if positive_slots else None))
+
+            if not days_with_gaps:
+                print(f"   ✓ Tutti i giorni coperti")
+                break
+
+            # Ordina per gap decrescente (priorità a giorni più scoperti)
+            days_with_gaps.sort(reverse=True)
+            total_gap_value, target_day, target_slot = days_with_gaps[0]
+
+            if target_slot is None:
+                break
+
+            print(f"   → Gap su {target_day}: {total_gap_value:.2f} persone mancanti")
+
+            candidate = None
+            allowed_gap = -3.0  # Permetti gap fino a 3 persone
+
+            for emp in sorted(ris['id dipendente'], key=lambda e: (len(weekend_work[e]), days_done[e])):
+                if (emp, target_day) in assigned_once:
+                    continue
+                if target_day in forced_off.get(emp, set()):
+                    continue
+
+                removable = None
+                best_removal_score = None
+
+                for day_existing, sid_existing in list(assignments_by_emp[emp].items()):
+                    if day_existing == target_day:
+                        continue
+
+                    # Calcola criticità rimozione
+                    min_gap_after_removal = float('inf')
+                    for s in shift_slots[sid_existing]:
+                        gap_after = current_coverage[day_existing][s] - 1 - demand_by_slot[day_existing].get(s, 0.0)
+                        min_gap_after_removal = min(min_gap_after_removal, gap_after)
+
+                    if min_gap_after_removal >= allowed_gap:
+                        if best_removal_score is None or min_gap_after_removal > best_removal_score:
+                            best_removal_score = min_gap_after_removal
+                            removable = (day_existing, sid_existing)
+
+                if removable is None:
+                    continue
+
+                day_remove, sid_remove = removable
+                for sid_new in shift_by_emp.get(emp, []):
+                    if target_slot not in shift_slots.get(sid_new, []):
+                        continue
+                    candidate = (emp, day_remove, sid_remove, sid_new)
+                    break
+
+                if candidate:
+                    break
+
+            if not candidate:
+                print(f"   ⚠️  Impossibile swap per {target_day} (gap: {total_gap_value:.2f})")
+                break
+
+            emp, day_remove, sid_remove, sid_new = candidate
+            print(f"   → Swap: {emp} {day_remove}→{target_day}")
+            remove_assignment(emp, day_remove)
+            apply_assignment(emp, target_day, sid_new)
+
+    # PRIORITÀ ASSOLUTA: Garantire presidio su TUTTE le fasce
+    fill_all_critical_gaps()  # Swap per tutti i giorni con gap
+    fill_saturday_gap()       # Extra focus su sabato
+    fill_sunday_gap()         # Extra focus su domenica
     ensure_required_days()
 
-    # ENFORCE CRITICAL COVERAGE viene eseguito DOPO fill_weekend per dare priorità agli swap
+    # ENFORCE CRITICAL COVERAGE viene eseguito DOPO fill_gap per dare priorità agli swap
     enforce_critical_coverage()
 
     ot_minutes_used = allocate_overtime()
