@@ -123,19 +123,24 @@ sns.set_palette("husl")
 # =============================================================================
 
 def trova_file_excel():
-    """Trova automaticamente il file Excel nella cartella dello script"""
+    """Trova automaticamente tutti i file Excel nella cartella dello script"""
     script_dir = os.path.dirname(os.path.abspath(__file__))
     file_excel = glob.glob(os.path.join(script_dir, '*.xlsx'))
+    # Escludi file temporanei e file già nella cartella output
     file_excel = [f for f in file_excel if not os.path.basename(f).startswith('~$')]
-    
+    file_excel = [f for f in file_excel if 'output' not in f]
+
     if len(file_excel) == 0:
         raise FileNotFoundError("Nessun file Excel trovato nella cartella dello script")
-    elif len(file_excel) == 1:
-        print(f"File trovato: {os.path.basename(file_excel[0])}")
-        return file_excel[0]
-    else:
-        print(f"Trovati {len(file_excel)} file Excel, uso il primo")
-        return file_excel[0]
+
+    print(f"\n{'='*80}")
+    print(f"TROVATI {len(file_excel)} FILE EXCEL DA PROCESSARE")
+    print(f"{'='*80}")
+    for i, f in enumerate(file_excel, 1):
+        print(f"  {i}. {os.path.basename(f)}")
+    print(f"{'='*80}\n")
+
+    return file_excel
 
 # =============================================================================
 # CARICAMENTO DATI
@@ -1788,25 +1793,23 @@ def genera_report_finale(df, kpi, forecast_giornaliero_df, output_dir):
     print("Report finale salvato")
 
 # =============================================================================
-# MAIN
+# PROCESSING SINGOLO FILE
 # =============================================================================
 
-def main(file_path=None, output_dir='output', giorni_forecast=28):
+def processa_singolo_file(file_path, output_dir, giorni_forecast=28):
     """
-    Esegue analisi completa
-    
+    Elabora un singolo file Excel e genera tutti gli output.
+
     Args:
-        file_path: path del file Excel (None = ricerca automatica)
-        output_dir: cartella output (default 'output')
-        giorni_forecast: numero di giorni da prevedere nel forecast (default 28 = 4 settimane)
+        file_path: path completo del file Excel
+        output_dir: cartella output per questo file
+        giorni_forecast: numero di giorni da prevedere nel forecast
+
+    Returns:
+        dict con risultati chiave (df, kpi, forecast, ecc.)
     """
     try:
-        if file_path is None:
-            file_path = trova_file_excel()
-        
-        script_dir = os.path.dirname(os.path.abspath(file_path))
-        output_full_path = os.path.join(script_dir, output_dir)
-        os.makedirs(output_full_path, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
         
         print("\n" + "=" * 80)
         print("ANALISI COMPLETA TRAFFICO CALL CENTER")
@@ -1818,42 +1821,42 @@ def main(file_path=None, output_dir='output', giorni_forecast=28):
         df = carica_dati(file_path)
 
         print("\n[2/16] Analisi fascia oraria...")
-        fascia_stats = analisi_fascia_oraria(df, output_full_path)
+        fascia_stats = analisi_fascia_oraria(df, output_dir)
 
         print("\n[3/16] Analisi giorno settimana...")
-        giorno_stats = analisi_giorno_settimana(df, output_full_path)
+        giorno_stats = analisi_giorno_settimana(df, output_dir)
 
         print("\n[4/16] Analisi settimana...")
-        week_stats = analisi_settimana(df, output_full_path)
+        week_stats = analisi_settimana(df, output_dir)
 
         print("\n[5/16] Analisi mese...")
-        mese_stats = analisi_mese(df, output_full_path)
+        mese_stats = analisi_mese(df, output_dir)
 
         print("\n[6/16] Heatmap...")
-        crea_heatmap(df, output_full_path)
+        crea_heatmap(df, output_dir)
 
         print("\n[7/16] Curve previsionali...")
-        curve = genera_curve_previsionali(df, output_full_path)
+        curve = genera_curve_previsionali(df, output_dir)
 
         print("\n[8/16] Trend storico...")
-        daily_trend = analisi_consuntiva_trend(df, output_full_path)
+        daily_trend = analisi_consuntiva_trend(df, output_dir)
 
         print("\n[9/16] Confronto periodi...")
-        week_comp, month_comp = analisi_confronto_periodi(df, output_full_path)
+        week_comp, month_comp = analisi_confronto_periodi(df, output_dir)
 
         print("\n[10/16] Anomalie...")
-        anomalie_alte, anomalie_basse = identifica_anomalie(df, output_full_path)
+        anomalie_alte, anomalie_basse = identifica_anomalie(df, output_dir)
 
         print("\n[11/16] KPI...")
-        kpi = dashboard_kpi_consuntivi(df, output_full_path)
+        kpi = dashboard_kpi_consuntivi(df, output_dir)
 
         print("\n[12/16] Valutazione forecast (backtest Holt-Winters)...")
-        valutazione = valuta_modelli_forecast(df, output_full_path, giorni_forecast=giorni_forecast)
+        valutazione = valuta_modelli_forecast(df, output_dir, giorni_forecast=giorni_forecast)
 
         print("\n[13/16] Forecast multi-modello...")
         forecast_modelli = genera_forecast_modelli(
             df,
-            output_full_path,
+            output_dir,
             giorni_forecast=giorni_forecast,
             metodi=('holtwinters', 'pattern', 'naive', 'sarima', 'prophet', 'tbats', 'intraday_dinamico')
         )
@@ -1863,59 +1866,175 @@ def main(file_path=None, output_dir='output', giorni_forecast=28):
             forecast_completo = next(iter(forecast_modelli.values()))
 
         print("\n[14/16] Report statistico...")
-        genera_report_statistico(df, fascia_stats, giorno_stats, week_stats, mese_stats, week_comp, month_comp, anomalie_alte, anomalie_basse, kpi, output_full_path)
+        genera_report_statistico(df, fascia_stats, giorno_stats, week_stats, mese_stats, week_comp, month_comp, anomalie_alte, anomalie_basse, kpi, output_dir)
 
         print("\n[15/16] Dashboard Excel...")
-        excel_path = crea_dashboard_excel(df, fascia_stats, giorno_stats, week_stats, mese_stats, curve, forecast_completo['giornaliero'], kpi, output_full_path)
+        excel_path = crea_dashboard_excel(df, fascia_stats, giorno_stats, week_stats, mese_stats, curve, forecast_completo['giornaliero'], kpi, output_dir)
 
         print("\n[16/16] Report finale...")
-        genera_report_finale(df, kpi, forecast_completo['giornaliero'], output_full_path)
+        genera_report_finale(df, kpi, forecast_completo['giornaliero'], output_dir)
         
         print("\n" + "=" * 80)
-        print("COMPLETATO!")
+        print("✅ FILE COMPLETATO!")
         print("=" * 80)
-        print(f"\nFile salvati in: {output_full_path}")
-        print("\nFILE GENERATI:")
-        print("\n  CURVE PREVISIONALI:")
-        print("    - curva_fascia_oraria.png")
-        print("    - curva_giorno_settimana.png")
-        print("    - curva_settimana.png")
-        print("    - curva_mese.png")
-        print("    - heatmap_giorno_fascia.png")
-        print("    - curve_previsionali.xlsx")
-        print("\n  CONSUNTIVI:")
-        print("    - analisi_trend_storico.png")
-        print("    - confronto_periodi.png")
-        print("    - identificazione_anomalie.png")
-        print("    - kpi_consuntivi.txt")
-        print("\n  FORECAST AVANZATO:")
-        print("    - forecast_settimanale.png")
-        print("    - forecast_giornaliero.png")
-        print("    - forecast_intraday_esempio.png")
-        print("    - forecast_completo.xlsx (3 livelli: settimanale, giornaliero, per fascia)")
-        print("    - valutazione_forecast.xlsx (backtest Holt-Winters)")
-        print("    - forecast_pattern.xlsx")
-        print("    - forecast_naive.xlsx")
-        print("    - forecast_sarima.xlsx (SARIMA con stagionalità settimanale)")
-        print("    - forecast_prophet.xlsx (✨ NUOVO: Prophet con festività italiane)")
-        print("    - forecast_tbats.xlsx (✨ NUOVO: TBATS multiple stagionalità)")
-        print("    - forecast_intraday_dinamico.xlsx (✨ NUOVO: Forecast per fascia dinamico)")
-        print("    - forecast_confronto_modelli.xlsx")
-        print("    - confronto_modelli_forecast.png (✨ NUOVO: Grafico comparativo)")
-        print("\n  DASHBOARD:")
-        print("    - dashboard_completa.xlsx")
-        print("    - report_statistico.txt")
-        print("    - report_finale.txt")
-        print("\n" + "=" * 80)
-        
-        return {'df': df, 'kpi': kpi, 'forecast': forecast_completo, 'valutazione': valutazione, 'forecast_modelli': forecast_modelli}
-        
+        print(f"File salvati in: {output_dir}")
+
+        return {
+            'file_path': file_path,
+            'output_dir': output_dir,
+            'df': df,
+            'kpi': kpi,
+            'forecast': forecast_completo,
+            'valutazione': valutazione,
+            'forecast_modelli': forecast_modelli,
+            'success': True
+        }
+
     except Exception as e:
-        print("\nERRORE:")
+        print(f"\n❌ ERRORE durante elaborazione di {os.path.basename(file_path)}:")
         print(str(e))
         import traceback
         traceback.print_exc()
-        raise
+        return {
+            'file_path': file_path,
+            'success': False,
+            'error': str(e)
+        }
+
+
+# =============================================================================
+# MAIN - BATCH PROCESSING
+# =============================================================================
+
+def main(giorni_forecast=28):
+    """
+    Elabora tutti i file Excel trovati nella cartella dello script.
+    Per ogni file crea una cartella output separata.
+
+    Args:
+        giorni_forecast: numero di giorni da prevedere nel forecast (default 28)
+
+    Returns:
+        list di dict con risultati per ogni file
+    """
+    print("\n" + "=" * 80)
+    print("🚀 AVVIO BATCH PROCESSING - ANALISI MULTIPLA")
+    print("=" * 80)
+
+    # Trova tutti i file Excel
+    file_excel_list = trova_file_excel()
+
+    if len(file_excel_list) == 0:
+        print("❌ Nessun file Excel trovato!")
+        return []
+
+    # Prepara risultati
+    risultati = []
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # Processa ogni file
+    for i, file_path in enumerate(file_excel_list, 1):
+        file_name = os.path.basename(file_path)
+        file_stem = os.path.splitext(file_name)[0]  # Nome senza estensione
+
+        print(f"\n{'='*80}")
+        print(f"📁 PROCESSING FILE {i}/{len(file_excel_list)}: {file_name}")
+        print(f"{'='*80}")
+
+        # Crea cartella output specifica per questo file
+        output_dir = os.path.join(script_dir, 'output', file_stem)
+
+        # Processa il file
+        risultato = processa_singolo_file(file_path, output_dir, giorni_forecast)
+        risultati.append(risultato)
+
+    # Genera report riassuntivo finale
+    print(f"\n{'='*80}")
+    print("📊 GENERAZIONE REPORT RIASSUNTIVO")
+    print(f"{'='*80}")
+    genera_report_riassuntivo(risultati, script_dir)
+
+    # Stampa riepilogo finale
+    print(f"\n{'='*80}")
+    print("🎉 BATCH PROCESSING COMPLETATO!")
+    print(f"{'='*80}")
+    print(f"\nFile processati: {len(file_excel_list)}")
+    success_count = sum(1 for r in risultati if r.get('success', False))
+    error_count = len(file_excel_list) - success_count
+    print(f"✅ Successi: {success_count}")
+    if error_count > 0:
+        print(f"❌ Errori: {error_count}")
+
+    print(f"\n📂 Output salvati in:")
+    print(f"   {os.path.join(script_dir, 'output')}/")
+    for r in risultati:
+        if r.get('success'):
+            folder_name = os.path.basename(r['output_dir'])
+            print(f"   ├── {folder_name}/")
+    print(f"   └── _report_riassuntivo.xlsx")
+    print(f"{'='*80}\n")
+
+    return risultati
+
+
+def genera_report_riassuntivo(risultati, script_dir):
+    """
+    Genera un report Excel riassuntivo con i KPI di tutti i file processati.
+
+    Args:
+        risultati: lista di dict con risultati per ogni file
+        script_dir: directory dello script
+    """
+    try:
+        report_data = []
+
+        for r in risultati:
+            if r.get('success'):
+                kpi = r.get('kpi', {})
+                forecast = r.get('forecast', {})
+
+                file_name = os.path.basename(r['file_path'])
+                giornaliero = forecast.get('giornaliero', pd.DataFrame())
+
+                report_data.append({
+                    'File': file_name,
+                    'Status': '✅ OK',
+                    'Totale Chiamate Storiche': kpi.get('totale_chiamate', 0),
+                    'Media Giornaliera': kpi.get('media_giornaliera', 0),
+                    'Trend': kpi.get('trend', 'N/D'),
+                    'Fascia Picco': kpi.get('fascia_picco', 'N/D'),
+                    'MAPE (%)': kpi.get('cv', 0),
+                    'Forecast Totale (90gg)': giornaliero['FORECAST'].sum() if not giornaliero.empty else 0,
+                    'Forecast Media/Giorno': giornaliero['FORECAST'].mean() if not giornaliero.empty else 0,
+                })
+            else:
+                report_data.append({
+                    'File': os.path.basename(r['file_path']),
+                    'Status': '❌ ERRORE',
+                    'Errore': r.get('error', 'Sconosciuto')
+                })
+
+        df_report = pd.DataFrame(report_data)
+
+        output_path = os.path.join(script_dir, 'output', '_report_riassuntivo.xlsx')
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+        with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+            df_report.to_excel(writer, sheet_name='Riepilogo', index=False)
+
+            # Aggiungi foglio con dettagli timestamp
+            info_df = pd.DataFrame([
+                ['Data Elaborazione', datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
+                ['File Processati', len(risultati)],
+                ['Successi', sum(1 for r in risultati if r.get('success'))],
+                ['Errori', sum(1 for r in risultati if not r.get('success'))]
+            ], columns=['Parametro', 'Valore'])
+            info_df.to_excel(writer, sheet_name='Info', index=False)
+
+        print(f"✅ Report riassuntivo salvato: _report_riassuntivo.xlsx")
+
+    except Exception as e:
+        print(f"⚠️  Errore generazione report riassuntivo: {e}")
 
 if __name__ == "__main__":
     print("=" * 80)
@@ -1962,8 +2081,8 @@ if __name__ == "__main__":
     print(f"    Equivalente a: {GIORNI_FORECAST/30:.1f} mesi circa")
     print("=" * 80 + "\n")
     
-    # Esegui analisi CON IL PARAMETRO CORRETTO
-    print(f"Avvio analisi con forecast per {GIORNI_FORECAST} giorni...\n")
+    # Esegui batch processing CON IL PARAMETRO CORRETTO
+    print(f"Avvio batch processing con forecast per {GIORNI_FORECAST} giorni...\n")
     risultati = main(giorni_forecast=GIORNI_FORECAST)
     
     print("\n" + "=" * 80)
