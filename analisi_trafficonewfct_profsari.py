@@ -1162,7 +1162,7 @@ def _forecast_sarima(df, giorni_forecast=28, order=(1, 1, 1), seasonal_order=(1,
 def _genera_festivita_italiane(anno_inizio, anno_fine):
     """
     Genera un DataFrame con le festività italiane principali.
-    Include festività fisse e mobili (Pasqua).
+    Include festività fisse, mobili (Pasqua), pre-festivi e post-festivi.
     """
     festivita_fisse = {
         'Capodanno': (1, 1),
@@ -1174,7 +1174,8 @@ def _genera_festivita_italiane(anno_inizio, anno_fine):
         'Ognissanti': (11, 1),
         'Immacolata': (12, 8),
         'Natale': (12, 25),
-        'Santo Stefano': (12, 26)
+        'Santo Stefano': (12, 26),
+        'Capodanno_Vigilia': (12, 31),  # Vigilia Capodanno
     }
 
     festivita_list = []
@@ -1182,12 +1183,37 @@ def _genera_festivita_italiane(anno_inizio, anno_fine):
     # Festività fisse
     for anno in range(anno_inizio, anno_fine + 1):
         for nome, (mese, giorno) in festivita_fisse.items():
+            data_festivo = pd.Timestamp(anno, mese, giorno)
+
+            # Festivo principale
             festivita_list.append({
                 'holiday': nome,
-                'ds': pd.Timestamp(anno, mese, giorno),
+                'ds': data_festivo,
                 'lower_window': 0,
                 'upper_window': 0
             })
+
+            # ✨ NUOVO: Pre-festivo (solo se cade lun-ven)
+            if data_festivo.dayofweek < 5:  # 0=lun, 4=ven
+                pre_festivo = data_festivo - timedelta(days=1)
+                if pre_festivo.dayofweek < 5:  # Solo se anche il giorno prima è feriale
+                    festivita_list.append({
+                        'holiday': f'{nome}_PreFestivo',
+                        'ds': pre_festivo,
+                        'lower_window': 0,
+                        'upper_window': 0
+                    })
+
+            # ✨ NUOVO: Post-festivo (solo se cade lun-ven)
+            if data_festivo.dayofweek < 5:
+                post_festivo = data_festivo + timedelta(days=1)
+                if post_festivo.dayofweek < 5:  # Solo se il giorno dopo è feriale
+                    festivita_list.append({
+                        'holiday': f'{nome}_PostFestivo',
+                        'ds': post_festivo,
+                        'lower_window': 0,
+                        'upper_window': 0
+                    })
 
     # Pasqua (calcolo approssimativo - per produzione usare libreria holidays)
     try:
@@ -1195,15 +1221,61 @@ def _genera_festivita_italiane(anno_inizio, anno_fine):
         it_holidays = holidays.Italy(years=range(anno_inizio, anno_fine + 1))
         for data, nome in it_holidays.items():
             if 'Pasqua' in nome or 'Easter' in nome:
+                data_pasqua = pd.Timestamp(data)
+
+                # Pasqua + Lunedì dell'Angelo
                 festivita_list.append({
                     'holiday': 'Pasqua',
-                    'ds': pd.Timestamp(data),
+                    'ds': data_pasqua,
                     'lower_window': 0,
                     'upper_window': 1  # Lunedì dell'Angelo
                 })
+
+                # ✨ Pre-Pasqua (Venerdì Santo e Giovedì)
+                if data_pasqua.dayofweek == 6:  # Domenica
+                    venerdi_santo = data_pasqua - timedelta(days=2)
+                    giovedi_santo = data_pasqua - timedelta(days=3)
+
+                    festivita_list.append({
+                        'holiday': 'Venerdi_Santo',
+                        'ds': venerdi_santo,
+                        'lower_window': -1,  # Include anche giovedì
+                        'upper_window': 0
+                    })
+
+                # ✨ Post-Pasqua (Martedì dopo Pasquetta)
+                martedi_post = data_pasqua + timedelta(days=2)
+                if martedi_post.dayofweek < 5:  # Se è feriale
+                    festivita_list.append({
+                        'holiday': 'PostPasqua',
+                        'ds': martedi_post,
+                        'lower_window': 0,
+                        'upper_window': 0
+                    })
+
     except ImportError:
         # Se holidays non disponibile, usa solo festività fisse
         pass
+
+    # ✨ NUOVO: Periodi festivi estesi (Natale/Capodanno)
+    for anno in range(anno_inizio, anno_fine + 1):
+        # Periodo natalizio esteso (27-30 Dic)
+        for giorno in range(27, 31):
+            festivita_list.append({
+                'holiday': 'Periodo_Natalizio',
+                'ds': pd.Timestamp(anno, 12, giorno),
+                'lower_window': 0,
+                'upper_window': 0
+            })
+
+        # Periodo post-Capodanno (2-3 Gen)
+        for giorno in [2, 3]:
+            festivita_list.append({
+                'holiday': 'Post_Capodanno',
+                'ds': pd.Timestamp(anno, 1, giorno),
+                'lower_window': 0,
+                'upper_window': 0
+            })
 
     return pd.DataFrame(festivita_list)
 
