@@ -1280,8 +1280,17 @@ def _genera_festivita_italiane(anno_inizio, anno_fine):
     return pd.DataFrame(festivita_list)
 
 
-def _forecast_prophet(df, giorni_forecast=28, produce_outputs=False):
-    """Forecast con Prophet (se disponibile) - con gestione festività."""
+def _forecast_prophet(df, giorni_forecast=28, produce_outputs=False, escludi_festivita=None):
+    """
+    Forecast con Prophet (se disponibile) - con gestione festività.
+
+    Args:
+        df: DataFrame con dati storici
+        giorni_forecast: numero giorni da prevedere
+        produce_outputs: stampa messaggi di debug
+        escludi_festivita: lista di festività da escludere (es. ['Natale', 'Santo_Stefano'])
+                          Utile se cambi policy (es. apri il servizio quando prima era chiuso)
+    """
     try:
         from prophet import Prophet
     except ImportError:
@@ -1300,8 +1309,14 @@ def _forecast_prophet(df, giorni_forecast=28, produce_outputs=False):
     anno_max = daily['DATA'].max().year + int(np.ceil(giorni_forecast / 365)) + 1
     festivita = _genera_festivita_italiane(anno_min, anno_max)
 
+    # ✨ NUOVO: Filtra festività escluse se richiesto
+    if escludi_festivita:
+        festivita = festivita[~festivita['holiday'].isin(escludi_festivita)]
+        if produce_outputs and len(escludi_festivita) > 0:
+            print(f"   Festività escluse da Prophet: {', '.join(escludi_festivita)}")
+
     model = Prophet(
-        holidays=festivita,  # ✅ NOVITÀ: Gestione festività
+        holidays=festivita if not festivita.empty else None,  # Gestione festività
         weekly_seasonality=True,
         yearly_seasonality=True if (anno_max - anno_min) >= 1 else False,  # Attiva se multi-anno
         daily_seasonality=False,
@@ -1425,7 +1440,7 @@ def _salva_forecast_excel(output_dir, nome_file, forecast_data):
     return actual_path
 
 
-def genera_forecast_modelli(df, output_dir, giorni_forecast=28, metodi=None):
+def genera_forecast_modelli(df, output_dir, giorni_forecast=28, metodi=None, escludi_festivita=None):
     """
     Esegue più modelli di forecast in parallelo e produce un confronto.
 
@@ -1434,7 +1449,8 @@ def genera_forecast_modelli(df, output_dir, giorni_forecast=28, metodi=None):
         output_dir: cartella output
         giorni_forecast: orizzonte di forecast
         metodi: iterabile con i metodi da eseguire
-                 (valori supportati: 'holtwinters', 'pattern', 'naive')
+                 (valori supportati: 'holtwinters', 'pattern', 'naive', 'sarima', 'prophet', 'tbats', 'intraday_dinamico')
+        escludi_festivita: lista festività da escludere da Prophet (es. ['Natale'] se apri quando prima eri chiuso)
     """
     if metodi is None:
         metodi = ('holtwinters', 'pattern', 'naive', 'sarima', 'prophet', 'tbats', 'intraday_dinamico')
@@ -1462,7 +1478,7 @@ def genera_forecast_modelli(df, output_dir, giorni_forecast=28, metodi=None):
                 actual_path = _salva_forecast_excel(output_dir, 'forecast_sarima.xlsx', risultati[metodo])
                 print(f"   Forecast SARIMA salvato: {actual_path.name}")
         elif metodo == 'prophet':
-            risultati[metodo] = _forecast_prophet(df, giorni_forecast, produce_outputs=False)
+            risultati[metodo] = _forecast_prophet(df, giorni_forecast, produce_outputs=False, escludi_festivita=escludi_festivita)
             if risultati[metodo] is not None:
                 actual_path = _salva_forecast_excel(output_dir, 'forecast_prophet.xlsx', risultati[metodo])
                 print(f"   Forecast Prophet salvato: {actual_path.name}")
@@ -1868,7 +1884,7 @@ def genera_report_finale(df, kpi, forecast_giornaliero_df, output_dir):
 # PROCESSING SINGOLO FILE
 # =============================================================================
 
-def processa_singolo_file(file_path, output_dir, giorni_forecast=28):
+def processa_singolo_file(file_path, output_dir, giorni_forecast=28, escludi_festivita=None):
     """
     Elabora un singolo file Excel e genera tutti gli output.
 
@@ -1876,6 +1892,7 @@ def processa_singolo_file(file_path, output_dir, giorni_forecast=28):
         file_path: path completo del file Excel
         output_dir: cartella output per questo file
         giorni_forecast: numero di giorni da prevedere nel forecast
+        escludi_festivita: lista festività da escludere da Prophet
 
     Returns:
         dict con risultati chiave (df, kpi, forecast, ecc.)
@@ -1930,7 +1947,8 @@ def processa_singolo_file(file_path, output_dir, giorni_forecast=28):
             df,
             output_dir,
             giorni_forecast=giorni_forecast,
-            metodi=('holtwinters', 'pattern', 'naive', 'sarima', 'prophet', 'tbats', 'intraday_dinamico')
+            metodi=('holtwinters', 'pattern', 'naive', 'sarima', 'prophet', 'tbats', 'intraday_dinamico'),
+            escludi_festivita=escludi_festivita
         )
         forecast_completo = forecast_modelli.get('holtwinters')
         if forecast_completo is None:
@@ -1978,13 +1996,14 @@ def processa_singolo_file(file_path, output_dir, giorni_forecast=28):
 # MAIN - BATCH PROCESSING
 # =============================================================================
 
-def main(giorni_forecast=28):
+def main(giorni_forecast=28, escludi_festivita=None):
     """
     Elabora tutti i file Excel trovati nella cartella dello script.
     Per ogni file crea una cartella output separata.
 
     Args:
         giorni_forecast: numero di giorni da prevedere nel forecast (default 28)
+        escludi_festivita: lista festività da escludere da Prophet (default None)
 
     Returns:
         list di dict con risultati per ogni file
@@ -2017,7 +2036,7 @@ def main(giorni_forecast=28):
         output_dir = os.path.join(script_dir, 'output', file_stem)
 
         # Processa il file
-        risultato = processa_singolo_file(file_path, output_dir, giorni_forecast)
+        risultato = processa_singolo_file(file_path, output_dir, giorni_forecast, escludi_festivita)
         risultati.append(risultato)
 
     # Genera report riassuntivo finale
@@ -2136,7 +2155,7 @@ if __name__ == "__main__":
     print("\n" + "=" * 80)
     print("CONFIGURAZIONE FORECAST")
     print("=" * 80)
-    
+
     # =========================================================================
     # *** PERSONALIZZA QUI IL PERIODO FORECAST ***
     # =========================================================================
@@ -2146,6 +2165,26 @@ if __name__ == "__main__":
                           #     28 = 4 settimane (default)
                           #     60 = ~2 mesi
                           #     90 = ~3 mesi
+
+    # =========================================================================
+    # *** PERSONALIZZA GESTIONE FESTIVITÀ (solo per Prophet) ***
+    # =========================================================================
+    # Se nel 2025 APRI il servizio in giorni che prima erano CHIUSI,
+    # escludi quelle festività dalla lista. Prophet imparerà dai dati storici
+    # che erano chiuse, ma se cambi policy devi escluderle manualmente.
+    #
+    # Esempio: Se nel 2024 eri chiuso a Natale (0 chiamate) ma nel 2025 apri:
+    # ESCLUDI_FESTIVITA = ['Natale', 'Santo_Stefano']
+    #
+    # Se mantieni le stesse policy dell'anno scorso, lascia vuoto:
+    ESCLUDI_FESTIVITA = []  # <-- Lista festività da escludere
+
+    # Festività disponibili:
+    # 'Capodanno', 'Epifania', 'Festa_Liberazione', 'Festa_Lavoro',
+    # 'Festa_Repubblica', 'Ferragosto', 'Ognissanti', 'Immacolata',
+    # 'Natale', 'Santo_Stefano', 'Capodanno_Vigilia', 'Pasqua',
+    # 'Venerdi_Santo', 'PostPasqua', 'Periodo_Natalizio', 'Post_Capodanno'
+    # E tutti i pre-festivi/post-festivi (es. 'Natale_PreFestivo')
     # =========================================================================
     
     print(f"\n>>> FORECAST CONFIGURATO: {GIORNI_FORECAST} GIORNI <<<")
@@ -2153,9 +2192,11 @@ if __name__ == "__main__":
     print(f"    Equivalente a: {GIORNI_FORECAST/30:.1f} mesi circa")
     print("=" * 80 + "\n")
     
-    # Esegui batch processing CON IL PARAMETRO CORRETTO
+    # Esegui batch processing CON I PARAMETRI CORRETTI
     print(f"Avvio batch processing con forecast per {GIORNI_FORECAST} giorni...\n")
-    risultati = main(giorni_forecast=GIORNI_FORECAST)
+    if ESCLUDI_FESTIVITA:
+        print(f"⚠️  Festività escluse da Prophet: {', '.join(ESCLUDI_FESTIVITA)}\n")
+    risultati = main(giorni_forecast=GIORNI_FORECAST, escludi_festivita=ESCLUDI_FESTIVITA)
     
     print("\n" + "=" * 80)
     print("ANALISI COMPLETATA CON SUCCESSO!")
