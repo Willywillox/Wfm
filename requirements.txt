@@ -1,0 +1,11 @@
+# WFM Turni Generator - Requirements
+
+# Core dependencies
+pandas>=1.5.0
+openpyxl>=3.0.0
+numpy>=1.21.0
+
+# GUI (Tkinter is built-in with Python)
+
+# For building executable
+pyinstaller>=5.0.0
