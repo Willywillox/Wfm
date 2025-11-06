@@ -1759,18 +1759,31 @@ def assegnazione_tight_capacity(
                     if day_existing == target_day or day_existing in weekend_days:
                         continue
 
-                    # NUOVA LOGICA: Permetti rimozione se dopo c'è ALMENO 1 persona su quella fascia
+                    # NUOVA LOGICA: Permetti rimozione se target è più critico del source
                     can_remove = True
                     min_coverage_after = float('inf')
+
+                    # Calcola se target_day (Sabato/Domenica) ha copertura zero
+                    target_has_zero_coverage = False
+                    for s in shift_slots[sid_existing]:
+                        target_coverage = current_coverage[target_day].get(s, 0)
+                        target_demand = demand_by_slot[target_day].get(s, 0.0)
+                        if target_demand > 0 and target_coverage == 0:
+                            target_has_zero_coverage = True
+                            break
 
                     for s in shift_slots[sid_existing]:
                         coverage_after = current_coverage[day_existing][s] - 1
                         demand = demand_by_slot[day_existing].get(s, 0.0)
 
-                        # Se rimuovendo si scende a 0 persone su fascia con requisiti > 0 → BLOCCO
+                        # MODIFICA CRITICA: Permetti che source vada a 0 SE target è completamente scoperto
+                        # Priorità: presidio weekend > mantenere copertura infrasettimanale
                         if demand > 0 and coverage_after <= 0:
-                            can_remove = False
-                            break
+                            if not target_has_zero_coverage:
+                                # Target non è critico, mantieni vincolo
+                                can_remove = False
+                                break
+                            # Altrimenti: target è a 0, permetti swap anche se source va a 0
 
                         min_coverage_after = min(min_coverage_after, coverage_after)
 
@@ -1867,18 +1880,31 @@ def assegnazione_tight_capacity(
                     if day_existing == target_day or day_existing in weekend_days:
                         continue
 
-                    # NUOVA LOGICA: Permetti rimozione se dopo c'è ALMENO 1 persona su quella fascia
+                    # NUOVA LOGICA: Permetti rimozione se target è più critico del source
                     can_remove = True
                     min_coverage_after = float('inf')
+
+                    # Calcola se target_day (Sabato/Domenica) ha copertura zero
+                    target_has_zero_coverage = False
+                    for s in shift_slots[sid_existing]:
+                        target_coverage = current_coverage[target_day].get(s, 0)
+                        target_demand = demand_by_slot[target_day].get(s, 0.0)
+                        if target_demand > 0 and target_coverage == 0:
+                            target_has_zero_coverage = True
+                            break
 
                     for s in shift_slots[sid_existing]:
                         coverage_after = current_coverage[day_existing][s] - 1
                         demand = demand_by_slot[day_existing].get(s, 0.0)
 
-                        # Se rimuovendo si scende a 0 persone su fascia con requisiti > 0 → BLOCCO
+                        # MODIFICA CRITICA: Permetti che source vada a 0 SE target è completamente scoperto
+                        # Priorità: presidio weekend > mantenere copertura infrasettimanale
                         if demand > 0 and coverage_after <= 0:
-                            can_remove = False
-                            break
+                            if not target_has_zero_coverage:
+                                # Target non è critico, mantieni vincolo
+                                can_remove = False
+                                break
+                            # Altrimenti: target è a 0, permetti swap anche se source va a 0
 
                         min_coverage_after = min(min_coverage_after, coverage_after)
 
@@ -1986,19 +2012,31 @@ def assegnazione_tight_capacity(
                     if day_existing == target_day:
                         continue
 
-                    # NUOVA LOGICA: Permetti rimozione se dopo c'è ALMENO 1 persona su quella fascia
-                    # (invece di limite arbitrario di gap)
+                    # NUOVA LOGICA: Permetti rimozione se target è più critico del source
                     can_remove = True
                     min_coverage_after = float('inf')
+
+                    # Calcola se target_day ha copertura zero su questi slot
+                    target_has_zero_coverage = False
+                    for s in shift_slots[sid_existing]:
+                        target_coverage = current_coverage[target_day].get(s, 0)
+                        target_demand = demand_by_slot[target_day].get(s, 0.0)
+                        if target_demand > 0 and target_coverage == 0:
+                            target_has_zero_coverage = True
+                            break
 
                     for s in shift_slots[sid_existing]:
                         coverage_after = current_coverage[day_existing][s] - 1
                         demand = demand_by_slot[day_existing].get(s, 0.0)
 
-                        # Se rimuovendo questo turno si scende a 0 persone su una fascia con requisiti > 0
+                        # MODIFICA CRITICA: Permetti che source vada a 0 SE target è completamente scoperto
+                        # Priorità: coprire fasce a zero > mantenere copertura esistente
                         if demand > 0 and coverage_after <= 0:
-                            can_remove = False  # BLOCCO: violerebbe presidio
-                            break
+                            if not target_has_zero_coverage:
+                                # Target non è critico, mantieni vincolo
+                                can_remove = False
+                                break
+                            # Altrimenti: target è a 0, permetti swap anche se source va a 0
 
                         min_coverage_after = min(min_coverage_after, coverage_after)
 
