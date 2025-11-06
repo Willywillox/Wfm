@@ -939,15 +939,18 @@ def assegnazione_tight_capacity(
                 demand = demand_by_slot[day].get(slot, 0.0)
                 current = current_coverage[day][slot]
                 if demand > 0 and current < demand:
-                    # PRIORITÀ: Domenica > Sabato > Infrasettimanale
-                    # Garantisce presidio weekend anche a costo di gap infrasettimanali
-                    if day == 'Dom':
-                        day_priority = 1500  # Priorità massima per domenica
-                    elif day == 'Sab':
-                        day_priority = 1000  # Priorità alta per sabato
-                    else:
-                        day_priority = 0     # Priorità normale infrasettimanale
-                    critical_gaps.append((day_priority, demand - current, day, slot))
+                    # PRIORITÀ PROPORZIONALE: chi è più scoperto in % ha priorità
+                    coverage_ratio = current / demand  # 0.0 = scoperto, 1.0 = coperto
+                    gap_absolute = demand - current
+
+                    # Bonus weekend per parità di copertura
+                    day_bonus = 0.15 if day == 'Dom' else 0.10 if day == 'Sab' else 0.0
+
+                    # Priorità inversamente proporzionale alla copertura
+                    # (1 - coverage_ratio) = quanto manca in percentuale
+                    priority = (1.0 - coverage_ratio) + day_bonus
+
+                    critical_gaps.append((priority, gap_absolute, day, slot))
         critical_gaps.sort(reverse=True)
 
         progressed = False
@@ -993,8 +996,18 @@ def assegnazione_tight_capacity(
                     val = shift_value(emp, day, sid, allow_overcapacity=True)
                     if val <= -1e4:
                         continue
-                    # PRIORITÀ: Weekend > Infrasettimanale nel fallback assignment
-                    day_bonus = 500 if day == 'Dom' else 300 if day == 'Sab' else 0
+                    # Calcola priorità basata sulla copertura percentuale del giorno
+                    day_demand = sum(demand_by_slot[day].values())
+                    day_current = sum(current_coverage[day].values())
+                    coverage_ratio = day_current / day_demand if day_demand > 0 else 1.0
+
+                    # Bonus per giorno più scoperto + piccolo bonus weekend
+                    day_bonus = (1.0 - coverage_ratio) * 100
+                    if day == 'Dom':
+                        day_bonus += 20
+                    elif day == 'Sab':
+                        day_bonus += 15
+
                     key = (val + day_bonus, -shift_start_min[sid])
                     if best is None or key > best:
                         best = key
@@ -1902,27 +1915,34 @@ def assegnazione_tight_capacity(
             days_with_gaps = []
             for day in giorni_validi:
                 gap_data = [
-                    (slot, demand_by_slot[day].get(slot, 0.0) - current_coverage[day][slot])
+                    (slot, demand_by_slot[day].get(slot, 0.0), current_coverage[day][slot])
                     for slot in slot_list
                 ]
-                positive_slots = [slot for slot, gap in gap_data if gap > 0.1]
-                total_gap = sum(gap for _, gap in gap_data if gap > 0.1)
+                positive_slots = [slot for slot, demand, current in gap_data if demand > 0 and current < demand]
+
+                if not positive_slots:
+                    continue
+
+                # Calcola copertura percentuale media del giorno
+                total_demand = sum(d for _, d, c in gap_data if d > 0 and c < d)
+                total_current = sum(c for _, d, c in gap_data if d > 0 and c < d)
+                total_gap = total_demand - total_current
 
                 if total_gap > 0.1:
-                    # PRIORITÀ: Domenica > Sabato > Infrasettimanale
-                    if day == 'Dom':
-                        day_priority = 1500
-                    elif day == 'Sab':
-                        day_priority = 1000
-                    else:
-                        day_priority = 0
-                    days_with_gaps.append((day_priority, total_gap, day, positive_slots[0] if positive_slots else None))
+                    # PRIORITÀ PROPORZIONALE: copertura % del giorno
+                    coverage_ratio = total_current / total_demand if total_demand > 0 else 1.0
+
+                    # Bonus weekend per parità di copertura
+                    day_bonus = 0.15 if day == 'Dom' else 0.10 if day == 'Sab' else 0.0
+
+                    priority = (1.0 - coverage_ratio) + day_bonus
+                    days_with_gaps.append((priority, total_gap, day, positive_slots[0]))
 
             if not days_with_gaps:
                 print(f"   ✓ Tutti i giorni coperti")
                 break
 
-            # Ordina per priorità giorno, poi gap decrescente
+            # Ordina per priorità proporzionale, poi gap assoluto
             days_with_gaps.sort(reverse=True)
             _, total_gap_value, target_day, target_slot = days_with_gaps[0]
 
