@@ -1733,7 +1733,16 @@ def assegnazione_tight_capacity(
             candidate = None
 
             # Cerca dipendenti per swap, priorità a chi ha meno weekend
-            max_weekend_allowed = 1 if iteration < max_iter // 2 else 2
+            # MODIFICA: Aumenta più velocemente il limite per garantire presidio
+            # Prima 50 iter: max=1, poi 50: max=2, poi: max=3, infine: nessun limite
+            if iteration < 50:
+                max_weekend_allowed = 1
+            elif iteration < 100:
+                max_weekend_allowed = 2
+            elif iteration < 200:
+                max_weekend_allowed = 3
+            else:
+                max_weekend_allowed = 999  # Nessun limite: presidio > bilanciamento
 
             for emp in sorted(ris['id dipendente'], key=lambda e: (len(weekend_work[e]), days_done[e])):
                 if (emp, target_day) in assigned_once:
@@ -1779,15 +1788,16 @@ def assegnazione_tight_capacity(
                     if slot not in shift_slots.get(sid_new, []):
                         continue
 
-                    # VERIFICA CRITICA: il nuovo turno NON deve coprire slot a zero requisiti
-                    covers_zero_slot = False
+                    # MODIFICA: Permetti turni che coprono ALMENO 1 slot con domanda > 0
+                    # anche se sbordano su slot a zero requisiti (es. serale che va oltre orario)
+                    covers_needed_slot = False
                     for s in shift_slots.get(sid_new, []):
-                        if demand_by_slot[target_day].get(s, 0.0) <= 0:
-                            covers_zero_slot = True
+                        if demand_by_slot[target_day].get(s, 0.0) > 0:
+                            covers_needed_slot = True
                             break
 
-                    if covers_zero_slot:
-                        continue  # Salta questo turno, cerca altro
+                    if not covers_needed_slot:
+                        continue  # Salta solo turni che NON coprono NESSUNA fascia necessaria
 
                     candidate = (emp, day_remove, sid_remove, sid_new)
                     break
@@ -1831,7 +1841,16 @@ def assegnazione_tight_capacity(
             candidate = None
 
             # Cerca dipendenti per swap, priorità a chi ha meno weekend
-            max_weekend_allowed = 1 if iteration < max_iter // 2 else 2
+            # MODIFICA: Aumenta più velocemente il limite per garantire presidio
+            # Prima 50 iter: max=1, poi 50: max=2, poi: max=3, infine: nessun limite
+            if iteration < 50:
+                max_weekend_allowed = 1
+            elif iteration < 100:
+                max_weekend_allowed = 2
+            elif iteration < 200:
+                max_weekend_allowed = 3
+            else:
+                max_weekend_allowed = 999  # Nessun limite: presidio > bilanciamento
 
             for emp in sorted(ris['id dipendente'], key=lambda e: (len(weekend_work[e]), days_done[e])):
                 if (emp, target_day) in assigned_once:
@@ -1877,15 +1896,16 @@ def assegnazione_tight_capacity(
                     if slot not in shift_slots.get(sid_new, []):
                         continue
 
-                    # VERIFICA CRITICA: il nuovo turno NON deve coprire slot a zero requisiti
-                    covers_zero_slot = False
+                    # MODIFICA: Permetti turni che coprono ALMENO 1 slot con domanda > 0
+                    # anche se sbordano su slot a zero requisiti (es. serale che va oltre orario)
+                    covers_needed_slot = False
                     for s in shift_slots.get(sid_new, []):
-                        if demand_by_slot[target_day].get(s, 0.0) <= 0:
-                            covers_zero_slot = True
+                        if demand_by_slot[target_day].get(s, 0.0) > 0:
+                            covers_needed_slot = True
                             break
 
-                    if covers_zero_slot:
-                        continue  # Salta questo turno, cerca altro
+                    if not covers_needed_slot:
+                        continue  # Salta solo turni che NON coprono NESSUNA fascia necessaria
 
                     candidate = (emp, day_remove, sid_remove, sid_new)
                     break
@@ -1996,15 +2016,16 @@ def assegnazione_tight_capacity(
                     if target_slot not in shift_slots.get(sid_new, []):
                         continue
 
-                    # VERIFICA CRITICA: il nuovo turno NON deve coprire slot a zero requisiti
-                    covers_zero_slot = False
+                    # MODIFICA: Permetti turni che coprono ALMENO 1 slot con domanda > 0
+                    # anche se sbordano su slot a zero requisiti (es. serale che va oltre orario)
+                    covers_needed_slot = False
                     for s in shift_slots.get(sid_new, []):
-                        if demand_by_slot[target_day].get(s, 0.0) <= 0:
-                            covers_zero_slot = True
+                        if demand_by_slot[target_day].get(s, 0.0) > 0:
+                            covers_needed_slot = True
                             break
 
-                    if covers_zero_slot:
-                        continue  # Salta questo turno, cerca altro
+                    if not covers_needed_slot:
+                        continue  # Salta solo turni che NON coprono NESSUNA fascia necessaria
 
                     candidate = (emp, day_remove, sid_remove, sid_new)
                     break
