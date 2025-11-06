@@ -1761,7 +1761,6 @@ def assegnazione_tight_capacity(
 
                     # NUOVA LOGICA: Permetti rimozione se target è più critico del source
                     can_remove = True
-                    min_coverage_after = float('inf')
 
                     # Calcola se target_day (Sabato/Domenica) ha copertura zero
                     target_has_zero_coverage = False
@@ -1785,12 +1784,22 @@ def assegnazione_tight_capacity(
                                 break
                             # Altrimenti: target è a 0, permetti swap anche se source va a 0
 
-                        min_coverage_after = min(min_coverage_after, coverage_after)
-
                     if can_remove:
-                        # Preferisci rimuovere turni che lasciano più copertura residua
-                        if best_removal_score is None or min_coverage_after > best_removal_score:
-                            best_removal_score = min_coverage_after
+                        # Calcola rapporto copertura/requisiti MEDIO del giorno DOPO la rimozione
+                        # Preferisci rimuovere da giorni più sovra-coperti (proporzionalmente)
+                        ratios_after = []
+                        for s in shift_slots[sid_existing]:
+                            coverage_after = current_coverage[day_existing][s] - 1
+                            demand = demand_by_slot[day_existing].get(s, 0.0)
+                            if demand > 0:
+                                ratio = coverage_after / demand
+                                ratios_after.append(ratio)
+
+                        # Score = rapporto medio (più alto = più sovra-coperto)
+                        avg_ratio_after = sum(ratios_after) / len(ratios_after) if ratios_after else 0
+
+                        if best_removal_score is None or avg_ratio_after > best_removal_score:
+                            best_removal_score = avg_ratio_after
                             removable = (day_existing, sid_existing)
 
                 if removable is None:
@@ -1882,7 +1891,6 @@ def assegnazione_tight_capacity(
 
                     # NUOVA LOGICA: Permetti rimozione se target è più critico del source
                     can_remove = True
-                    min_coverage_after = float('inf')
 
                     # Calcola se target_day (Sabato/Domenica) ha copertura zero
                     target_has_zero_coverage = False
@@ -1906,12 +1914,22 @@ def assegnazione_tight_capacity(
                                 break
                             # Altrimenti: target è a 0, permetti swap anche se source va a 0
 
-                        min_coverage_after = min(min_coverage_after, coverage_after)
-
                     if can_remove:
-                        # Preferisci rimuovere turni che lasciano più copertura residua
-                        if best_removal_score is None or min_coverage_after > best_removal_score:
-                            best_removal_score = min_coverage_after
+                        # Calcola rapporto copertura/requisiti MEDIO del giorno DOPO la rimozione
+                        # Preferisci rimuovere da giorni più sovra-coperti (proporzionalmente)
+                        ratios_after = []
+                        for s in shift_slots[sid_existing]:
+                            coverage_after = current_coverage[day_existing][s] - 1
+                            demand = demand_by_slot[day_existing].get(s, 0.0)
+                            if demand > 0:
+                                ratio = coverage_after / demand
+                                ratios_after.append(ratio)
+
+                        # Score = rapporto medio (più alto = più sovra-coperto)
+                        avg_ratio_after = sum(ratios_after) / len(ratios_after) if ratios_after else 0
+
+                        if best_removal_score is None or avg_ratio_after > best_removal_score:
+                            best_removal_score = avg_ratio_after
                             removable = (day_existing, sid_existing)
 
                 if removable is None:
@@ -2014,7 +2032,6 @@ def assegnazione_tight_capacity(
 
                     # NUOVA LOGICA: Permetti rimozione se target è più critico del source
                     can_remove = True
-                    min_coverage_after = float('inf')
 
                     # Calcola se target_day ha copertura zero su questi slot
                     target_has_zero_coverage = False
@@ -2038,12 +2055,22 @@ def assegnazione_tight_capacity(
                                 break
                             # Altrimenti: target è a 0, permetti swap anche se source va a 0
 
-                        min_coverage_after = min(min_coverage_after, coverage_after)
-
                     if can_remove:
-                        # Preferisci rimuovere turni che lasciano più copertura residua
-                        if best_removal_score is None or min_coverage_after > best_removal_score:
-                            best_removal_score = min_coverage_after
+                        # Calcola rapporto copertura/requisiti MEDIO del giorno DOPO la rimozione
+                        # Preferisci rimuovere da giorni più sovra-coperti (proporzionalmente)
+                        ratios_after = []
+                        for s in shift_slots[sid_existing]:
+                            coverage_after = current_coverage[day_existing][s] - 1
+                            demand = demand_by_slot[day_existing].get(s, 0.0)
+                            if demand > 0:
+                                ratio = coverage_after / demand
+                                ratios_after.append(ratio)
+
+                        # Score = rapporto medio (più alto = più sovra-coperto)
+                        avg_ratio_after = sum(ratios_after) / len(ratios_after) if ratios_after else 0
+
+                        if best_removal_score is None or avg_ratio_after > best_removal_score:
+                            best_removal_score = avg_ratio_after
                             removable = (day_existing, sid_existing)
 
                 if removable is None:
