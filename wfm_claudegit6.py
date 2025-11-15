@@ -1040,45 +1040,122 @@ def assegnazione_tight_capacity(
             break
 
     def rebalance_weekends():
+        """
+        Riequilibra weekend spostando da chi ha Sab+Dom a chi ha 0 weekend.
+        VERSIONE FLESSIBILE: Cerca QUALSIASI turno compatibile, non solo lo stesso.
+        """
         changed = True
-        while changed:
+        iterations = 0
+        max_iterations = 100
+        total_swaps = 0
+
+        while changed and iterations < max_iterations:
             changed = False
+            iterations += 1
+
             double = [emp for emp in ris['id dipendente'] if len(weekend_work[emp]) >= 2]
             zero = [emp for emp in ris['id dipendente'] if len(weekend_work[emp]) == 0 and assignments_by_emp[emp]]
+
+            if iterations == 1:
+                print(f"   → {len(double)} operatori con ≥2 weekend, {len(zero)} con 0 weekend")
+
             if not double or not zero:
+                if iterations == 1:
+                    print(f"   ⚠️  Impossibile bilanciare: double={len(double)}, zero={len(zero)}")
                 break
+
+            # DEBUG: Contatori per capire perché gli swap falliscono
+            fail_reasons = {
+                'forced_off': 0,
+                'no_weekend_shifts': 0,
+                'no_weekday_shifts': 0,
+                'no_valid_swap': 0
+            }
+
             for emp in double:
                 swapped = False
                 weekend_days_emp = sorted([d for d in weekend_days if d in assignments_by_emp[emp]])
+
                 for wday in weekend_days_emp:
                     sid_w = assignments_by_emp[emp][wday]
+
                     for cand in zero:
                         if len(weekend_work[cand]) != 0:
                             continue
                         if wday in forced_off.get(cand, set()):
+                            fail_reasons['forced_off'] += 1
                             continue
-                        if sid_w not in shift_by_emp.get(cand, []):
+
+                        # FLESSIBILITÀ: Cerca QUALSIASI turno disponibile per cand nel giorno weekend
+                        # Non richiede più che sia esattamente sid_w
+                        cand_weekend_shifts = [s for s in shift_by_emp.get(cand, [])
+                                               if s in shift_slots]  # Qualsiasi turno valido
+
+                        if not cand_weekend_shifts:
+                            fail_reasons['no_weekend_shifts'] += 1
                             continue
+
+                        # Prova con il turno originale se disponibile, altrimenti prendi il primo
+                        if sid_w in cand_weekend_shifts:
+                            sid_for_cand = sid_w
+                        else:
+                            sid_for_cand = cand_weekend_shifts[0]
+
+                        # Cerca un giorno infrasettimanale del candidato da scambiare
+                        found_valid_weekday = False
                         for day_cand, sid_cand in list(assignments_by_emp[cand].items()):
                             if day_cand in weekend_days:
                                 continue
                             if day_cand in forced_off.get(emp, set()):
                                 continue
-                            if sid_cand not in shift_by_emp.get(emp, []):
+
+                            # FLESSIBILITÀ: Cerca QUALSIASI turno disponibile per emp nel giorno infrasettimanale
+                            emp_weekday_shifts = [s for s in shift_by_emp.get(emp, [])
+                                                  if s in shift_slots]
+
+                            if not emp_weekday_shifts:
                                 continue
+
+                            found_valid_weekday = True
+
+                            # Prova con il turno originale se disponibile, altrimenti prendi il primo
+                            if sid_cand in emp_weekday_shifts:
+                                sid_for_emp = sid_cand
+                            else:
+                                sid_for_emp = emp_weekday_shifts[0]
+
+                            # Esegui lo swap
                             remove_assignment(emp, wday)
                             remove_assignment(cand, day_cand)
-                            apply_assignment(cand, wday, sid_w)
-                            apply_assignment(emp, day_cand, sid_cand)
+                            apply_assignment(cand, wday, sid_for_cand)
+                            apply_assignment(emp, day_cand, sid_for_emp)
+                            total_swaps += 1
+                            if total_swaps <= 5:  # Mostra solo i primi 5
+                                print(f"   ✓ Swap #{total_swaps}: {emp} {wday}↔{cand} {day_cand}")
                             swapped = True
                             changed = True
                             break
+
+                        # Se non trovato valid weekday, conta come fallimento
+                        if not found_valid_weekday:
+                            fail_reasons['no_weekday_shifts'] += 1
+
                         if swapped:
                             break
                     if swapped:
                         break
                 if changed:
                     break
+
+            # Stampa statistiche failure se non ci sono stati swap
+            if iterations == 1 and total_swaps == 0 and (fail_reasons['forced_off'] > 0 or fail_reasons['no_weekend_shifts'] > 0):
+                print(f"   ⚠️  Nessuno swap possibile. Motivi:")
+                if fail_reasons['forced_off'] > 0:
+                    print(f"      - {fail_reasons['forced_off']} tentativi bloccati da forced_off")
+                if fail_reasons['no_weekend_shifts'] > 0:
+                    print(f"      - {fail_reasons['no_weekend_shifts']} candidati senza turni weekend disponibili")
+                if fail_reasons['no_weekday_shifts'] > 0:
+                    print(f"      - {fail_reasons['no_weekday_shifts']} candidati senza turni infrasettimanali validi")
 
     rebalance_weekends()
 
