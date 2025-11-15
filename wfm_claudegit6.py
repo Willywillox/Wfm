@@ -2017,17 +2017,36 @@ def assegnazione_tight_capacity(
 
             candidate = None
 
+            # BILANCIAMENTO WEEKEND: Limite progressivo come fill_saturday/sunday_gap
+            # Solo per target_day weekend, altrimenti nessun limite
+            if target_day in weekend_days:
+                if iteration < 100:
+                    max_weekend_allowed = 1
+                elif iteration < 250:
+                    max_weekend_allowed = 2
+                else:
+                    max_weekend_allowed = 999  # Presidio > bilanciamento
+            else:
+                max_weekend_allowed = 999  # Nessun limite per giorni infrasettimanali
+
             for emp in sorted(ris['id dipendente'], key=lambda e: (len(weekend_work[e]), days_done[e])):
                 if (emp, target_day) in assigned_once:
                     continue
                 if target_day in forced_off.get(emp, set()):
                     continue
+                if target_day in weekend_days and len(weekend_work[emp]) >= max_weekend_allowed:
+                    continue  # Applica limite solo per target weekend
 
                 removable = None
                 best_removal_score = None
 
                 for day_existing, sid_existing in list(assignments_by_emp[emp].items()):
                     if day_existing == target_day:
+                        continue
+
+                    # BILANCIAMENTO WEEKEND: Non spostare DA weekend A weekend
+                    # Evita di creare sbilanciamenti (es. togliere Sab per mettere Dom)
+                    if day_existing in weekend_days and target_day in weekend_days:
                         continue
 
                     # NUOVA LOGICA: Permetti rimozione se target è più critico del source
@@ -2251,6 +2270,11 @@ def assegnazione_tight_capacity(
                 print(f"   {status} {day}: {ratio:.0%} coperto (domanda: {total_demand:.0f}, copertura: {total_coverage:.0f})")
 
     rebalance_proportional_coverage()
+
+    # PULIZIA FINALE: Riequilibra weekend dopo tutti i riempimenti e bilanciamenti
+    # Le funzioni fill_gap potrebbero aver creato sbilanciamenti in scenari difficili
+    print("\n♻️  PULIZIA FINALE - Riequilibrio weekend post-fill...")
+    rebalance_weekends()
 
     # ENFORCE CRITICAL COVERAGE viene eseguito DOPO fill_gap per dare priorità agli swap
     enforce_critical_coverage()
