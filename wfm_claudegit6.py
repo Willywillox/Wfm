@@ -2113,6 +2113,130 @@ def assegnazione_tight_capacity(
     fill_sunday_gap()         # Extra focus su domenica
     ensure_required_days()
 
+    def rebalance_proportional_coverage(max_iter=100):
+        """
+        RIEQUILIBRIO PROPORZIONALE POST-FILL:
+        Dopo i fill_gap, bilancia la copertura infrasettimanale proporzionalmente ai requisiti.
+        Sposta persone da giorni sovra-coperti (ratio > 1.3) a sotto-coperti (ratio < 0.8).
+        NON tocca weekend (già ottimizzato dai fill_gap).
+        """
+        print("\n🔄 RIEQUILIBRIO PROPORZIONALE - Bilanciamento finale infrasettimanale...")
+
+        weekday_only = ['Lun', 'Mar', 'Mer', 'Gio', 'Ven']
+
+        for iteration in range(max_iter):
+            # Calcola ratio coverage/demand per ogni giorno infrasettimanale
+            day_ratios = {}
+            for day in weekday_only:
+                total_demand = sum(demand_by_slot[day].values())
+                total_coverage = sum(current_coverage[day].values())
+                if total_demand > 0:
+                    day_ratios[day] = total_coverage / total_demand
+                else:
+                    day_ratios[day] = 1.0
+
+            # Trova giorno più sovra-coperto
+            most_over = max(day_ratios.keys(), key=lambda d: day_ratios[d])
+            max_ratio = day_ratios[most_over]
+
+            # Trova giorno più sotto-coperto
+            most_under = min(day_ratios.keys(), key=lambda d: day_ratios[d])
+            min_ratio = day_ratios[most_under]
+
+            # Se differenza < 30%, stop (bilanciamento accettabile)
+            diff = max_ratio - min_ratio
+            if diff < 0.3:
+                print(f"   ✓ Bilanciamento accettabile (max diff: {diff:.1%})")
+                break
+
+            print(f"   Iter {iteration+1}: {most_over} {max_ratio:.0%} → {most_under} {min_ratio:.0%} (diff: {diff:.1%})")
+
+            # Prova swap: persona da most_over → most_under
+            swapped = False
+
+            # Cerca dipendente assegnato a most_over
+            candidates = []
+            for emp in ris['id dipendente']:
+                if most_over not in assignments_by_emp[emp]:
+                    continue
+                if (emp, most_under) in assigned_once:
+                    continue  # Già assegnato a most_under
+                if most_under in forced_off.get(emp, set()):
+                    continue  # Vietato in most_under
+
+                sid_over = assignments_by_emp[emp][most_over]
+
+                # Verifica che rimuovendo da most_over non si vada a 0 su fasce critiche
+                can_remove = True
+                min_coverage_after = float('inf')
+
+                for s in shift_slots[sid_over]:
+                    coverage_after = current_coverage[most_over][s] - 1
+                    demand = demand_by_slot[most_over].get(s, 0.0)
+
+                    # VINCOLO: Non portare a 0 fasce con domanda > 0 (a meno che most_under sia a 0)
+                    if demand > 0 and coverage_after <= 0:
+                        # Verifica se most_under è critico (a zero)
+                        under_is_critical = False
+                        for s2 in shift_slots.get(sid_over, []):
+                            if demand_by_slot[most_under].get(s2, 0.0) > 0 and current_coverage[most_under][s2] == 0:
+                                under_is_critical = True
+                                break
+
+                        if not under_is_critical:
+                            can_remove = False
+                            break
+
+                    min_coverage_after = min(min_coverage_after, coverage_after)
+
+                if not can_remove:
+                    continue
+
+                # Verifica che emp abbia un turno disponibile per most_under
+                matching_shifts = []
+                for sid_new in shift_by_emp.get(emp, []):
+                    # Il turno deve coprire almeno 1 slot con domanda > 0 in most_under
+                    covers_needed = False
+                    for s in shift_slots.get(sid_new, []):
+                        if demand_by_slot[most_under].get(s, 0.0) > 0:
+                            covers_needed = True
+                            break
+                    if covers_needed:
+                        matching_shifts.append(sid_new)
+
+                if not matching_shifts:
+                    continue
+
+                # Calcola beneficio dello swap
+                benefit = (max_ratio - 1.0) + (1.0 - min_ratio)  # Quanto migliora il bilanciamento
+                candidates.append((benefit, min_coverage_after, emp, sid_over, matching_shifts[0]))
+
+            if not candidates:
+                print(f"   ⚠️  Impossibile swap {most_over}→{most_under} (nessun candidato)")
+                break
+
+            # Prendi migliore candidato (massimo beneficio, mantiene più copertura)
+            candidates.sort(reverse=True)
+            _, _, emp, sid_over, sid_new = candidates[0]
+
+            # Esegui swap
+            print(f"   → Swap: {emp} {most_over}→{most_under} (bilanciamento proporzionale)")
+            remove_assignment(emp, most_over)
+            apply_assignment(emp, most_under, sid_new)
+            swapped = True
+
+        # Report finale
+        print("\n📊 BILANCIAMENTO FINALE INFRASETTIMANALE:")
+        for day in weekday_only:
+            total_demand = sum(demand_by_slot[day].values())
+            total_coverage = sum(current_coverage[day].values())
+            if total_demand > 0:
+                ratio = total_coverage / total_demand
+                status = "✓" if 0.8 <= ratio <= 1.3 else "⚠️"
+                print(f"   {status} {day}: {ratio:.0%} coperto (domanda: {total_demand:.0f}, copertura: {total_coverage:.0f})")
+
+    rebalance_proportional_coverage()
+
     # ENFORCE CRITICAL COVERAGE viene eseguito DOPO fill_gap per dare priorità agli swap
     enforce_critical_coverage()
 
