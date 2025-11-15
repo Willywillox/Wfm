@@ -939,12 +939,23 @@ def assegnazione_tight_capacity(
                 demand = demand_by_slot[day].get(slot, 0.0)
                 current = current_coverage[day][slot]
                 if demand > 0 and current < demand:
-                    critical_gaps.append((demand - current, day, slot))
+                    # PRIORITÀ PROPORZIONALE: chi è più scoperto in % ha priorità
+                    coverage_ratio = current / demand  # 0.0 = scoperto, 1.0 = coperto
+                    gap_absolute = demand - current
+
+                    # Bonus weekend per parità di copertura
+                    day_bonus = 0.15 if day == 'Dom' else 0.10 if day == 'Sab' else 0.0
+
+                    # Priorità inversamente proporzionale alla copertura
+                    # (1 - coverage_ratio) = quanto manca in percentuale
+                    priority = (1.0 - coverage_ratio) + day_bonus
+
+                    critical_gaps.append((priority, gap_absolute, day, slot))
         critical_gaps.sort(reverse=True)
 
         progressed = False
         # Aumentato da 20 a 100 per considerare più gap critici (es. ultima fascia con domanda bassa)
-        for _, day, target_slot in critical_gaps[:100]:
+        for _, _, day, target_slot in critical_gaps[:100]:
             candidates = []
             for emp in remaining_people():
                 if (emp, day) in assigned_once or day in forced_off.get(emp, set()):
@@ -985,7 +996,19 @@ def assegnazione_tight_capacity(
                     val = shift_value(emp, day, sid, allow_overcapacity=True)
                     if val <= -1e4:
                         continue
-                    key = (val, -shift_start_min[sid])
+                    # Calcola priorità basata sulla copertura percentuale del giorno
+                    day_demand = sum(demand_by_slot[day].values())
+                    day_current = sum(current_coverage[day].values())
+                    coverage_ratio = day_current / day_demand if day_demand > 0 else 1.0
+
+                    # Bonus per giorno più scoperto + piccolo bonus weekend
+                    day_bonus = (1.0 - coverage_ratio) * 100
+                    if day == 'Dom':
+                        day_bonus += 20
+                    elif day == 'Sab':
+                        day_bonus += 15
+
+                    key = (val + day_bonus, -shift_start_min[sid])
                     if best is None or key > best:
                         best = key
                         best_day = day
@@ -1710,7 +1733,16 @@ def assegnazione_tight_capacity(
             candidate = None
 
             # Cerca dipendenti per swap, priorità a chi ha meno weekend
-            max_weekend_allowed = 1 if iteration < max_iter // 2 else 2
+            # MODIFICA: Aumenta più velocemente il limite per garantire presidio
+            # Prima 50 iter: max=1, poi 50: max=2, poi: max=3, infine: nessun limite
+            if iteration < 50:
+                max_weekend_allowed = 1
+            elif iteration < 100:
+                max_weekend_allowed = 2
+            elif iteration < 200:
+                max_weekend_allowed = 3
+            else:
+                max_weekend_allowed = 999  # Nessun limite: presidio > bilanciamento
 
             for emp in sorted(ris['id dipendente'], key=lambda e: (len(weekend_work[e]), days_done[e])):
                 if (emp, target_day) in assigned_once:
@@ -1727,25 +1759,47 @@ def assegnazione_tight_capacity(
                     if day_existing == target_day or day_existing in weekend_days:
                         continue
 
-                    # NUOVA LOGICA: Permetti rimozione se dopo c'è ALMENO 1 persona su quella fascia
+                    # NUOVA LOGICA: Permetti rimozione se target è più critico del source
                     can_remove = True
-                    min_coverage_after = float('inf')
+
+                    # Calcola se target_day (Sabato/Domenica) ha copertura zero
+                    target_has_zero_coverage = False
+                    for s in shift_slots[sid_existing]:
+                        target_coverage = current_coverage[target_day].get(s, 0)
+                        target_demand = demand_by_slot[target_day].get(s, 0.0)
+                        if target_demand > 0 and target_coverage == 0:
+                            target_has_zero_coverage = True
+                            break
 
                     for s in shift_slots[sid_existing]:
                         coverage_after = current_coverage[day_existing][s] - 1
                         demand = demand_by_slot[day_existing].get(s, 0.0)
 
-                        # Se rimuovendo si scende a 0 persone su fascia con requisiti > 0 → BLOCCO
+                        # MODIFICA CRITICA: Permetti che source vada a 0 SE target è completamente scoperto
+                        # Priorità: presidio weekend > mantenere copertura infrasettimanale
                         if demand > 0 and coverage_after <= 0:
-                            can_remove = False
-                            break
-
-                        min_coverage_after = min(min_coverage_after, coverage_after)
+                            if not target_has_zero_coverage:
+                                # Target non è critico, mantieni vincolo
+                                can_remove = False
+                                break
+                            # Altrimenti: target è a 0, permetti swap anche se source va a 0
 
                     if can_remove:
-                        # Preferisci rimuovere turni che lasciano più copertura residua
-                        if best_removal_score is None or min_coverage_after > best_removal_score:
-                            best_removal_score = min_coverage_after
+                        # Calcola rapporto copertura/requisiti MEDIO del giorno DOPO la rimozione
+                        # Preferisci rimuovere da giorni più sovra-coperti (proporzionalmente)
+                        ratios_after = []
+                        for s in shift_slots[sid_existing]:
+                            coverage_after = current_coverage[day_existing][s] - 1
+                            demand = demand_by_slot[day_existing].get(s, 0.0)
+                            if demand > 0:
+                                ratio = coverage_after / demand
+                                ratios_after.append(ratio)
+
+                        # Score = rapporto medio (più alto = più sovra-coperto)
+                        avg_ratio_after = sum(ratios_after) / len(ratios_after) if ratios_after else 0
+
+                        if best_removal_score is None or avg_ratio_after > best_removal_score:
+                            best_removal_score = avg_ratio_after
                             removable = (day_existing, sid_existing)
 
                 if removable is None:
@@ -1756,15 +1810,16 @@ def assegnazione_tight_capacity(
                     if slot not in shift_slots.get(sid_new, []):
                         continue
 
-                    # VERIFICA CRITICA: il nuovo turno NON deve coprire slot a zero requisiti
-                    covers_zero_slot = False
+                    # MODIFICA: Permetti turni che coprono ALMENO 1 slot con domanda > 0
+                    # anche se sbordano su slot a zero requisiti (es. serale che va oltre orario)
+                    covers_needed_slot = False
                     for s in shift_slots.get(sid_new, []):
-                        if demand_by_slot[target_day].get(s, 0.0) <= 0:
-                            covers_zero_slot = True
+                        if demand_by_slot[target_day].get(s, 0.0) > 0:
+                            covers_needed_slot = True
                             break
 
-                    if covers_zero_slot:
-                        continue  # Salta questo turno, cerca altro
+                    if not covers_needed_slot:
+                        continue  # Salta solo turni che NON coprono NESSUNA fascia necessaria
 
                     candidate = (emp, day_remove, sid_remove, sid_new)
                     break
@@ -1808,7 +1863,16 @@ def assegnazione_tight_capacity(
             candidate = None
 
             # Cerca dipendenti per swap, priorità a chi ha meno weekend
-            max_weekend_allowed = 1 if iteration < max_iter // 2 else 2
+            # MODIFICA: Aumenta più velocemente il limite per garantire presidio
+            # Prima 50 iter: max=1, poi 50: max=2, poi: max=3, infine: nessun limite
+            if iteration < 50:
+                max_weekend_allowed = 1
+            elif iteration < 100:
+                max_weekend_allowed = 2
+            elif iteration < 200:
+                max_weekend_allowed = 3
+            else:
+                max_weekend_allowed = 999  # Nessun limite: presidio > bilanciamento
 
             for emp in sorted(ris['id dipendente'], key=lambda e: (len(weekend_work[e]), days_done[e])):
                 if (emp, target_day) in assigned_once:
@@ -1825,25 +1889,47 @@ def assegnazione_tight_capacity(
                     if day_existing == target_day or day_existing in weekend_days:
                         continue
 
-                    # NUOVA LOGICA: Permetti rimozione se dopo c'è ALMENO 1 persona su quella fascia
+                    # NUOVA LOGICA: Permetti rimozione se target è più critico del source
                     can_remove = True
-                    min_coverage_after = float('inf')
+
+                    # Calcola se target_day (Sabato/Domenica) ha copertura zero
+                    target_has_zero_coverage = False
+                    for s in shift_slots[sid_existing]:
+                        target_coverage = current_coverage[target_day].get(s, 0)
+                        target_demand = demand_by_slot[target_day].get(s, 0.0)
+                        if target_demand > 0 and target_coverage == 0:
+                            target_has_zero_coverage = True
+                            break
 
                     for s in shift_slots[sid_existing]:
                         coverage_after = current_coverage[day_existing][s] - 1
                         demand = demand_by_slot[day_existing].get(s, 0.0)
 
-                        # Se rimuovendo si scende a 0 persone su fascia con requisiti > 0 → BLOCCO
+                        # MODIFICA CRITICA: Permetti che source vada a 0 SE target è completamente scoperto
+                        # Priorità: presidio weekend > mantenere copertura infrasettimanale
                         if demand > 0 and coverage_after <= 0:
-                            can_remove = False
-                            break
-
-                        min_coverage_after = min(min_coverage_after, coverage_after)
+                            if not target_has_zero_coverage:
+                                # Target non è critico, mantieni vincolo
+                                can_remove = False
+                                break
+                            # Altrimenti: target è a 0, permetti swap anche se source va a 0
 
                     if can_remove:
-                        # Preferisci rimuovere turni che lasciano più copertura residua
-                        if best_removal_score is None or min_coverage_after > best_removal_score:
-                            best_removal_score = min_coverage_after
+                        # Calcola rapporto copertura/requisiti MEDIO del giorno DOPO la rimozione
+                        # Preferisci rimuovere da giorni più sovra-coperti (proporzionalmente)
+                        ratios_after = []
+                        for s in shift_slots[sid_existing]:
+                            coverage_after = current_coverage[day_existing][s] - 1
+                            demand = demand_by_slot[day_existing].get(s, 0.0)
+                            if demand > 0:
+                                ratio = coverage_after / demand
+                                ratios_after.append(ratio)
+
+                        # Score = rapporto medio (più alto = più sovra-coperto)
+                        avg_ratio_after = sum(ratios_after) / len(ratios_after) if ratios_after else 0
+
+                        if best_removal_score is None or avg_ratio_after > best_removal_score:
+                            best_removal_score = avg_ratio_after
                             removable = (day_existing, sid_existing)
 
                 if removable is None:
@@ -1854,15 +1940,16 @@ def assegnazione_tight_capacity(
                     if slot not in shift_slots.get(sid_new, []):
                         continue
 
-                    # VERIFICA CRITICA: il nuovo turno NON deve coprire slot a zero requisiti
-                    covers_zero_slot = False
+                    # MODIFICA: Permetti turni che coprono ALMENO 1 slot con domanda > 0
+                    # anche se sbordano su slot a zero requisiti (es. serale che va oltre orario)
+                    covers_needed_slot = False
                     for s in shift_slots.get(sid_new, []):
-                        if demand_by_slot[target_day].get(s, 0.0) <= 0:
-                            covers_zero_slot = True
+                        if demand_by_slot[target_day].get(s, 0.0) > 0:
+                            covers_needed_slot = True
                             break
 
-                    if covers_zero_slot:
-                        continue  # Salta questo turno, cerca altro
+                    if not covers_needed_slot:
+                        continue  # Salta solo turni che NON coprono NESSUNA fascia necessaria
 
                     candidate = (emp, day_remove, sid_remove, sid_new)
                     break
@@ -1892,22 +1979,36 @@ def assegnazione_tight_capacity(
             days_with_gaps = []
             for day in giorni_validi:
                 gap_data = [
-                    (slot, demand_by_slot[day].get(slot, 0.0) - current_coverage[day][slot])
+                    (slot, demand_by_slot[day].get(slot, 0.0), current_coverage[day][slot])
                     for slot in slot_list
                 ]
-                positive_slots = [slot for slot, gap in gap_data if gap > 0.1]
-                total_gap = sum(gap for _, gap in gap_data if gap > 0.1)
+                positive_slots = [slot for slot, demand, current in gap_data if demand > 0 and current < demand]
+
+                if not positive_slots:
+                    continue
+
+                # Calcola copertura percentuale media del giorno
+                total_demand = sum(d for _, d, c in gap_data if d > 0 and c < d)
+                total_current = sum(c for _, d, c in gap_data if d > 0 and c < d)
+                total_gap = total_demand - total_current
 
                 if total_gap > 0.1:
-                    days_with_gaps.append((total_gap, day, positive_slots[0] if positive_slots else None))
+                    # PRIORITÀ PROPORZIONALE: copertura % del giorno
+                    coverage_ratio = total_current / total_demand if total_demand > 0 else 1.0
+
+                    # Bonus weekend per parità di copertura
+                    day_bonus = 0.15 if day == 'Dom' else 0.10 if day == 'Sab' else 0.0
+
+                    priority = (1.0 - coverage_ratio) + day_bonus
+                    days_with_gaps.append((priority, total_gap, day, positive_slots[0]))
 
             if not days_with_gaps:
                 print(f"   ✓ Tutti i giorni coperti")
                 break
 
-            # Ordina per gap decrescente (priorità a giorni più scoperti)
+            # Ordina per priorità proporzionale, poi gap assoluto
             days_with_gaps.sort(reverse=True)
-            total_gap_value, target_day, target_slot = days_with_gaps[0]
+            _, total_gap_value, target_day, target_slot = days_with_gaps[0]
 
             if target_slot is None:
                 break
@@ -1929,26 +2030,47 @@ def assegnazione_tight_capacity(
                     if day_existing == target_day:
                         continue
 
-                    # NUOVA LOGICA: Permetti rimozione se dopo c'è ALMENO 1 persona su quella fascia
-                    # (invece di limite arbitrario di gap)
+                    # NUOVA LOGICA: Permetti rimozione se target è più critico del source
                     can_remove = True
-                    min_coverage_after = float('inf')
+
+                    # Calcola se target_day ha copertura zero su questi slot
+                    target_has_zero_coverage = False
+                    for s in shift_slots[sid_existing]:
+                        target_coverage = current_coverage[target_day].get(s, 0)
+                        target_demand = demand_by_slot[target_day].get(s, 0.0)
+                        if target_demand > 0 and target_coverage == 0:
+                            target_has_zero_coverage = True
+                            break
 
                     for s in shift_slots[sid_existing]:
                         coverage_after = current_coverage[day_existing][s] - 1
                         demand = demand_by_slot[day_existing].get(s, 0.0)
 
-                        # Se rimuovendo questo turno si scende a 0 persone su una fascia con requisiti > 0
+                        # MODIFICA CRITICA: Permetti che source vada a 0 SE target è completamente scoperto
+                        # Priorità: coprire fasce a zero > mantenere copertura esistente
                         if demand > 0 and coverage_after <= 0:
-                            can_remove = False  # BLOCCO: violerebbe presidio
-                            break
-
-                        min_coverage_after = min(min_coverage_after, coverage_after)
+                            if not target_has_zero_coverage:
+                                # Target non è critico, mantieni vincolo
+                                can_remove = False
+                                break
+                            # Altrimenti: target è a 0, permetti swap anche se source va a 0
 
                     if can_remove:
-                        # Preferisci rimuovere turni che lasciano più copertura residua
-                        if best_removal_score is None or min_coverage_after > best_removal_score:
-                            best_removal_score = min_coverage_after
+                        # Calcola rapporto copertura/requisiti MEDIO del giorno DOPO la rimozione
+                        # Preferisci rimuovere da giorni più sovra-coperti (proporzionalmente)
+                        ratios_after = []
+                        for s in shift_slots[sid_existing]:
+                            coverage_after = current_coverage[day_existing][s] - 1
+                            demand = demand_by_slot[day_existing].get(s, 0.0)
+                            if demand > 0:
+                                ratio = coverage_after / demand
+                                ratios_after.append(ratio)
+
+                        # Score = rapporto medio (più alto = più sovra-coperto)
+                        avg_ratio_after = sum(ratios_after) / len(ratios_after) if ratios_after else 0
+
+                        if best_removal_score is None or avg_ratio_after > best_removal_score:
+                            best_removal_score = avg_ratio_after
                             removable = (day_existing, sid_existing)
 
                 if removable is None:
@@ -1959,15 +2081,16 @@ def assegnazione_tight_capacity(
                     if target_slot not in shift_slots.get(sid_new, []):
                         continue
 
-                    # VERIFICA CRITICA: il nuovo turno NON deve coprire slot a zero requisiti
-                    covers_zero_slot = False
+                    # MODIFICA: Permetti turni che coprono ALMENO 1 slot con domanda > 0
+                    # anche se sbordano su slot a zero requisiti (es. serale che va oltre orario)
+                    covers_needed_slot = False
                     for s in shift_slots.get(sid_new, []):
-                        if demand_by_slot[target_day].get(s, 0.0) <= 0:
-                            covers_zero_slot = True
+                        if demand_by_slot[target_day].get(s, 0.0) > 0:
+                            covers_needed_slot = True
                             break
 
-                    if covers_zero_slot:
-                        continue  # Salta questo turno, cerca altro
+                    if not covers_needed_slot:
+                        continue  # Salta solo turni che NON coprono NESSUNA fascia necessaria
 
                     candidate = (emp, day_remove, sid_remove, sid_new)
                     break
@@ -1989,6 +2112,145 @@ def assegnazione_tight_capacity(
     fill_saturday_gap()       # Extra focus su sabato
     fill_sunday_gap()         # Extra focus su domenica
     ensure_required_days()
+
+    def rebalance_proportional_coverage(max_iter=100):
+        """
+        RIEQUILIBRIO PROPORZIONALE POST-FILL:
+        Dopo i fill_gap, bilancia la copertura infrasettimanale proporzionalmente ai requisiti.
+        Sposta persone da giorni sovra-coperti (ratio > 1.3) a sotto-coperti (ratio < 0.8).
+        NON tocca weekend (già ottimizzato dai fill_gap).
+        """
+        print("\n🔄 RIEQUILIBRIO PROPORZIONALE - Bilanciamento finale infrasettimanale...")
+
+        weekday_only = ['Lun', 'Mar', 'Mer', 'Gio', 'Ven']
+
+        for iteration in range(max_iter):
+            # Calcola ratio coverage/demand per ogni giorno infrasettimanale
+            day_ratios = {}
+            for day in weekday_only:
+                total_demand = sum(demand_by_slot[day].values())
+                total_coverage = sum(current_coverage[day].values())
+                if total_demand > 0:
+                    day_ratios[day] = total_coverage / total_demand
+                else:
+                    day_ratios[day] = 1.0
+
+            # Trova giorno più sovra-coperto
+            most_over = max(day_ratios.keys(), key=lambda d: day_ratios[d])
+            max_ratio = day_ratios[most_over]
+
+            # Trova giorno più sotto-coperto
+            most_under = min(day_ratios.keys(), key=lambda d: day_ratios[d])
+            min_ratio = day_ratios[most_under]
+
+            # Se differenza < 30%, stop (bilanciamento accettabile)
+            diff = max_ratio - min_ratio
+            if diff < 0.3:
+                print(f"   ✓ Bilanciamento accettabile (max diff: {diff:.1%})")
+                break
+
+            print(f"   Iter {iteration+1}: {most_over} {max_ratio:.0%} → {most_under} {min_ratio:.0%} (diff: {diff:.1%})")
+
+            # Prova swap: persona da most_over → most_under
+            swapped = False
+
+            # Cerca dipendente assegnato a most_over
+            candidates = []
+            for emp in ris['id dipendente']:
+                if most_over not in assignments_by_emp[emp]:
+                    continue
+                if (emp, most_under) in assigned_once:
+                    continue  # Già assegnato a most_under
+                if most_under in forced_off.get(emp, set()):
+                    continue  # Vietato in most_under
+
+                # BILANCIAMENTO WEEKEND: Evita di spostare persone con entrambi i weekend assegnati
+                # per preservare il bilanciamento weekend fatto da rebalance_weekends()
+                weekend_days_assigned = [d for d in ['Sab', 'Dom'] if d in assignments_by_emp[emp]]
+                if len(weekend_days_assigned) >= 2:
+                    continue  # Ha entrambi i weekend, preserva questo operatore
+
+                sid_over = assignments_by_emp[emp][most_over]
+
+                # Verifica che rimuovendo da most_over non si vada a 0 su fasce critiche
+                can_remove = True
+                min_coverage_after = float('inf')
+
+                for s in shift_slots[sid_over]:
+                    coverage_after = current_coverage[most_over][s] - 1
+                    demand = demand_by_slot[most_over].get(s, 0.0)
+
+                    # VINCOLO: Non portare a 0 fasce con domanda > 0 (a meno che most_under sia a 0)
+                    if demand > 0 and coverage_after <= 0:
+                        # Verifica se most_under è critico (a zero)
+                        under_is_critical = False
+                        for s2 in shift_slots.get(sid_over, []):
+                            if demand_by_slot[most_under].get(s2, 0.0) > 0 and current_coverage[most_under][s2] == 0:
+                                under_is_critical = True
+                                break
+
+                        if not under_is_critical:
+                            can_remove = False
+                            break
+
+                    min_coverage_after = min(min_coverage_after, coverage_after)
+
+                if not can_remove:
+                    continue
+
+                # Verifica che emp abbia un turno disponibile per most_under
+                matching_shifts = []
+                for sid_new in shift_by_emp.get(emp, []):
+                    # Il turno deve coprire almeno 1 slot con domanda > 0 in most_under
+                    covers_needed = False
+                    for s in shift_slots.get(sid_new, []):
+                        if demand_by_slot[most_under].get(s, 0.0) > 0:
+                            covers_needed = True
+                            break
+                    if covers_needed:
+                        matching_shifts.append(sid_new)
+
+                if not matching_shifts:
+                    continue
+
+                # Calcola beneficio dello swap
+                benefit = (max_ratio - 1.0) + (1.0 - min_ratio)  # Quanto migliora il bilanciamento
+
+                # PRIORITÀ: Preferisci spostare chi ha meno giorni di weekend
+                # Questo preserva meglio il bilanciamento weekend
+                weekend_penalty = len(weekend_days_assigned) * 0.5  # Penalità per ogni giorno weekend
+
+                candidates.append((benefit - weekend_penalty, min_coverage_after, emp, sid_over, matching_shifts[0]))
+
+            if not candidates:
+                print(f"   ⚠️  Impossibile swap {most_over}→{most_under} (nessun candidato)")
+                break
+
+            # Prendi migliore candidato (massimo beneficio, mantiene più copertura)
+            candidates.sort(reverse=True)
+            _, _, emp, sid_over, sid_new = candidates[0]
+
+            # Verifica weekend per log
+            emp_weekends = [d for d in ['Sab', 'Dom'] if d in assignments_by_emp[emp]]
+            weekend_info = f" (weekend: {','.join(emp_weekends) if emp_weekends else 'nessuno'})" if emp_weekends else ""
+
+            # Esegui swap
+            print(f"   → Swap: {emp} {most_over}→{most_under}{weekend_info}")
+            remove_assignment(emp, most_over)
+            apply_assignment(emp, most_under, sid_new)
+            swapped = True
+
+        # Report finale
+        print("\n📊 BILANCIAMENTO FINALE INFRASETTIMANALE:")
+        for day in weekday_only:
+            total_demand = sum(demand_by_slot[day].values())
+            total_coverage = sum(current_coverage[day].values())
+            if total_demand > 0:
+                ratio = total_coverage / total_demand
+                status = "✓" if 0.8 <= ratio <= 1.3 else "⚠️"
+                print(f"   {status} {day}: {ratio:.0%} coperto (domanda: {total_demand:.0f}, copertura: {total_coverage:.0f})")
+
+    rebalance_proportional_coverage()
 
     # ENFORCE CRITICAL COVERAGE viene eseguito DOPO fill_gap per dare priorità agli swap
     enforce_critical_coverage()
