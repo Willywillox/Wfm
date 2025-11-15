@@ -701,14 +701,21 @@ def assegnazione_tight_capacity(
         if already == 0:
             base = 45.0
         else:
+            # VINCOLO HARD: Se emp ha già 1+ weekend, verifica se ci sono alternative
             others = any(
                 len(weekend_work[o]) == 0 and days_done[o] < work_need[o] and day not in forced_off.get(o, set())
                 for o in ris['id dipendente'] if o != emp
             )
             if others:
-                base = -180.0 if strict_phase else -110.0
+                # PENALITÀ MASSICCIA: Blocco quasi totale del secondo weekend
+                # Aumentato da -180/-110 a -5000 per evitare weekend consecutivi
+                base = -5000.0
+            elif already >= 2:
+                # Già ha entrambi i weekend: blocco totale
+                base = -10000.0
             else:
-                base = -60.0
+                # Nessun altro disponibile MA ha già un weekend
+                base = -500.0  # Aumentato da -60
         return base * capacity_factor
 
     def shift_value(emp: str, day: str, sid: str, allow_overcapacity: bool = False, force_any: bool = False) -> float:
@@ -2128,8 +2135,18 @@ def assegnazione_tight_capacity(
 
     # PRIORITÀ ASSOLUTA: Garantire presidio su TUTTE le fasce
     fill_all_critical_gaps()  # Swap per tutti i giorni con gap
+
+    # Riequilibra weekend dopo fill_all_critical_gaps
+    print("\n♻️  Riequilibrio weekend post-fill_all_critical_gaps...")
+    rebalance_weekends()
+
     fill_saturday_gap()       # Extra focus su sabato
     fill_sunday_gap()         # Extra focus su domenica
+
+    # Riequilibra weekend dopo fill_saturday/sunday_gap
+    print("\n♻️  Riequilibrio weekend post-fill_saturday/sunday_gap...")
+    rebalance_weekends()
+
     ensure_required_days()
 
     def rebalance_proportional_coverage(max_iter=100):

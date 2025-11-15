@@ -39,3 +39,7 @@ Thumbs.db
 # Excel temporary files
 ~$*.xlsx
 ~$*.xlsm
+
+# Test output files
+test_*.xlsx
+test_*.xlsm
