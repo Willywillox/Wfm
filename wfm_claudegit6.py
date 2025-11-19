@@ -2968,6 +2968,13 @@ def main():
             turni_cand = carica_turni_predefiniti(turni)
         except ValueError as exc:
             raise SystemExit(str(exc))
+        n_spezzati = turni_cand['is_spezzato'].sum() if 'is_spezzato' in turni_cand.columns else 0
+        print(f"INFO: Caricati {len(turni_cand)} turni predefiniti ({n_spezzati} spezzati)")
+        # Mostra distribuzione durate
+        durate_dist = turni_cand.groupby('durata_min').size().to_dict()
+        print(f"INFO: Distribuzione durate turni predefiniti:")
+        for dur, cnt in sorted(durate_dist.items()):
+            print(f"  {int(dur)}min ({int(dur)//60}h{int(dur)%60:02d}m): {cnt} turni")
     else:
         try:
             turni_cand = genera_turni_candidati(
@@ -2989,6 +2996,21 @@ def main():
             print(f"  :{minute:02d} -> {distrib[minute]}")
 
     shift_by_emp = determina_turni_ammissibili(ris, turni_cand, durations_by_emp)
+
+    # Diagnostica turni ammissibili per dipendente
+    emps_no_shifts = [emp for emp, shifts in shift_by_emp.items() if not shifts]
+    if emps_no_shifts:
+        print(f"\n⚠️  ATTENZIONE: {len(emps_no_shifts)} dipendenti senza turni ammissibili!")
+        # Mostra dettagli per capire il problema
+        for emp in emps_no_shifts[:5]:  # Mostra primi 5
+            emp_dur = durations_by_emp.get(emp, 240)
+            print(f"  • {emp}: richiede {emp_dur}min, disponibili durate: {list(durate_dist.keys()) if args.use_predefined else 'auto'}")
+        if len(emps_no_shifts) > 5:
+            print(f"  ... e altri {len(emps_no_shifts) - 5} dipendenti")
+        print("  → Verifica che le durate nel foglio Turni corrispondano alle ore/giorno dei dipendenti\n")
+    else:
+        print(f"INFO: Tutti i {len(shift_by_emp)} dipendenti hanno turni ammissibili")
+
     forced_off, forced_on = leggi_vincoli_weekend(ris)
 
     prefer_tuple = prefer_phases if prefer_phases else tuple(sorted({0, 15, 30, 45}))
