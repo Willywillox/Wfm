@@ -255,6 +255,120 @@ def carica_dati(percorso_input: str):
     return req, turni, ris, cfg
 
 
+def carica_turni_predefiniti(turni: pd.DataFrame, slot_size: int = 15) -> pd.DataFrame:
+    """
+    Carica turni predefiniti dal foglio Turni, gestendo sia turni normali che spezzati.
+
+    Struttura attesa foglio Turni:
+    - Col A: id turno
+    - Col B: entrata (inizio prima parte)
+    - Col C: uscita (fine prima parte)
+    - Col D: Inizio spezzato (inizio seconda parte, vuoto se non spezzato)
+    - Col E: Fine spezzato (fine seconda parte, vuoto se non spezzato)
+    - Col F: durata (ore totali)
+
+    Returns:
+        DataFrame con colonne: id turno, start_min, end_min, durata_min,
+                              is_spezzato, spezzato_start_min, spezzato_end_min
+    """
+    rows = []
+
+    # Trova colonne
+    id_col = _find_col(turni, 'id turno')
+    entrata_col = _find_col(turni, 'entrata')
+    uscita_col = _find_col(turni, 'uscita')
+    durata_col = _find_col(turni, 'durata')
+
+    # Colonne spezzato (cerca varianti)
+    spezz_ini_col = _find_col(turni, 'Inizio spezzato') or _find_col(turni, 'Inzio spezzato')
+    spezz_fin_col = _find_col(turni, 'Fine spezzato')
+
+    if id_col is None or entrata_col is None or uscita_col is None:
+        raise ValueError("Foglio Turni deve avere colonne: 'id turno', 'entrata', 'uscita'")
+
+    for _, row in turni.iterrows():
+        turno_id = row[id_col]
+        if pd.isna(turno_id) or str(turno_id).strip() == '':
+            continue
+
+        # Prima parte del turno
+        start_min = _to_minutes(row[entrata_col])
+        end_min = _to_minutes(row[uscita_col])
+
+        # Durata
+        if durata_col is not None and not pd.isna(row[durata_col]):
+            durata_min = int(float(row[durata_col]) * 60)
+        else:
+            durata_min = end_min - start_min
+
+        # Verifica se è spezzato
+        is_spezzato = False
+        spezz_start = None
+        spezz_end = None
+
+        if spezz_ini_col is not None and spezz_fin_col is not None:
+            spezz_ini_val = row.get(spezz_ini_col)
+            spezz_fin_val = row.get(spezz_fin_col)
+
+            if not pd.isna(spezz_ini_val) and not pd.isna(spezz_fin_val):
+                spezz_start = _to_minutes(spezz_ini_val)
+                spezz_end = _to_minutes(spezz_fin_val)
+                if spezz_start < 24*60 and spezz_end < 24*60:  # Validi
+                    is_spezzato = True
+
+        # end_min finale è la fine dell'ultima parte
+        final_end = spezz_end if is_spezzato else end_min
+
+        rows.append({
+            'id turno': str(turno_id).strip(),
+            'entrata_str': _from_minutes(start_min),
+            'uscita_str': _from_minutes(final_end),
+            'start_min': start_min,
+            'end_min': final_end,
+            'durata_min': durata_min,
+            'is_spezzato': is_spezzato,
+            'parte1_start': start_min,
+            'parte1_end': end_min,
+            'parte2_start': spezz_start if is_spezzato else None,
+            'parte2_end': spezz_end if is_spezzato else None,
+        })
+
+    df = pd.DataFrame(rows)
+    print(f"INFO: Caricati {len(df)} turni predefiniti ({sum(df['is_spezzato'])} spezzati)")
+    return df
+
+
+def calcola_slots_turno(turno_row, slot_size: int = 15) -> list:
+    """
+    Calcola la lista di slot coperti da un turno (considerando eventuali pause per spezzati).
+
+    Per turno normale 09:00-13:00 con slot_size=15: [540, 555, 570, ..., 765]
+    Per turno spezzato 09:00-13:00 + 14:00-18:00: [540, 555, ..., 765] + [840, 855, ..., 1065]
+    """
+    slots = []
+
+    # Prima parte
+    start1 = int(turno_row['parte1_start'])
+    end1 = int(turno_row['parte1_end'])
+
+    slot = start1
+    while slot < end1:
+        slots.append(slot)
+        slot += slot_size
+
+    # Seconda parte (se spezzato)
+    if turno_row['is_spezzato'] and turno_row['parte2_start'] is not None:
+        start2 = int(turno_row['parte2_start'])
+        end2 = int(turno_row['parte2_end'])
+
+        slot = start2
+        while slot < end2:
+            slots.append(slot)
+            slot += slot_size
+
+    return slots
+
+
 # ----------------------------- Prep -----------------------------
 def prepara_req(req: pd.DataFrame) -> pd.DataFrame:
     q = req.copy()
@@ -616,10 +730,20 @@ def assegnazione_tight_capacity(
 
     shift_start_min = dict(zip(turni_cand['id turno'], turni_cand['start_min']))
     shift_end_min = dict(zip(turni_cand['id turno'], turni_cand['end_min']))
-    shift_slots = {
-        row['id turno']: [s for s in slot_list if row['start_min'] <= s < row['end_min']]
-        for _, row in turni_cand.iterrows()
-    }
+    shift_duration_min = dict(zip(turni_cand['id turno'], turni_cand['durata_min']))
+
+    # Calcola slot coperti per ogni turno (gestisce turni spezzati)
+    shift_slots = {}
+    for _, row in turni_cand.iterrows():
+        turno_id = row['id turno']
+        if 'is_spezzato' in row and row['is_spezzato']:
+            # Turno spezzato: usa calcola_slots_turno che gestisce le pause
+            all_slots = calcola_slots_turno(row, slot_size)
+            # Filtra solo gli slot presenti nella slot_list
+            shift_slots[turno_id] = [s for s in all_slots if s in slot_list]
+        else:
+            # Turno continuo: logica originale
+            shift_slots[turno_id] = [s for s in slot_list if row['start_min'] <= s < row['end_min']]
 
     assignment_details = {}
 
@@ -2456,7 +2580,8 @@ def assegnazione_tight_capacity(
 
     # 2. Verifica ore/giorno (durata turni)
     for emp, day, sid in assignments:
-        actual_duration = shift_end_min[sid] - shift_start_min[sid]
+        # Usa la durata dichiarata per turni spezzati, altrimenti calcola da inizio/fine
+        actual_duration = shift_duration_min.get(sid, shift_end_min[sid] - shift_start_min[sid])
         required_duration = durations_by_emp.get(emp, 240)
         if actual_duration != required_duration:
             violations.append(f"⛔ {emp} {day}: turno {actual_duration}min invece di {required_duration}min richiesti")
@@ -2794,6 +2919,8 @@ def main():
                        help='Assegna comunque lo straordinario disponibile anche in overcoverage (se minuti coerenti)')
     parser.add_argument('--force-balance', action='store_true',
                         help='Garantisce i giorni minimi per risorsa anche andando in overcoverage controllato')
+    parser.add_argument('--use-predefined', action='store_true',
+                        help='Usa i turni predefiniti dal foglio Turni invece di generarli automaticamente (supporta turni spezzati)')
     parser.add_argument('--overcap', type=str, default=None,
                         help='Override percentuale overcapacity per giorno (es. "Dom=0,Gio=0.12")')
     parser.add_argument('--overcap-penalty', type=str, default=None,
@@ -2834,17 +2961,24 @@ def main():
     if args.strict_phase:
         print("INFO: Modalita STRICT PHASE attiva")
 
-    try:
-        turni_cand = genera_turni_candidati(
-            req_pre,
-            durations_set_min,
-            grid_step_min=args.grid,
-            force_phase_minutes=force_minutes
-        )
-    except ValueError as exc:
-        raise SystemExit(str(exc))
-
-    print(f"INFO: Generati {len(turni_cand)} turni candidati")
+    # Scegli se usare turni predefiniti o generarli automaticamente
+    if args.use_predefined:
+        print("INFO: Uso turni predefiniti dal foglio Turni (supporta spezzati)")
+        try:
+            turni_cand = carica_turni_predefiniti(turni)
+        except ValueError as exc:
+            raise SystemExit(str(exc))
+    else:
+        try:
+            turni_cand = genera_turni_candidati(
+                req_pre,
+                durations_set_min,
+                grid_step_min=args.grid,
+                force_phase_minutes=force_minutes
+            )
+        except ValueError as exc:
+            raise SystemExit(str(exc))
+        print(f"INFO: Generati {len(turni_cand)} turni candidati")
     if force_minutes:
         distrib = {}
         for start in turni_cand['start_min']:
