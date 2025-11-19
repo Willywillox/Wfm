@@ -43,3 +43,6 @@ Thumbs.db
 # Test output files
 test_*.xlsx
 test_*.xlsm
+
+# Default output file
+tabella_turni.xlsx
