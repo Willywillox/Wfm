@@ -37,6 +37,9 @@ AUTORE: Analisi WFM Call Center
 VERSIONE: 2.0 Enhanced (con multiple stagionalità)
 """
 
+SCRIPT_VERSION = "2.1.1"
+LAST_UPDATE = "2025-11-21"
+
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -47,7 +50,15 @@ import os
 import glob
 from pathlib import Path
 import warnings
+import tempfile
 warnings.filterwarnings('ignore')
+
+VERBOSE = os.environ.get("FORECAST_VERBOSE", "0").lower() not in ("0", "false", "no", "")
+
+
+def log_debug(message: str):
+    if VERBOSE:
+        print(message)
 
 @contextmanager
 def safe_excel_writer(path, **kwargs):
@@ -89,28 +100,28 @@ except ImportError:
 
 try:
     import sys
-    print(f"DEBUG: Python executable: {sys.executable}")
-    print(f"DEBUG: Tentativo import TBATS...")
+    log_debug(f"DEBUG: Python executable: {sys.executable}")
+    log_debug("DEBUG: Tentativo import TBATS...")
     from tbats import TBATS
     TBATS_AVAILABLE = True
-    print(f"DEBUG: ✅ TBATS importato con successo!")
-    print(f"DEBUG: TBATS location: {TBATS.__module__}")
+    log_debug("DEBUG: ✅ TBATS importato con successo!")
+    log_debug(f"DEBUG: TBATS location: {TBATS.__module__}")
 except (ImportError, ValueError) as e:
     TBATS_AVAILABLE = False
-    print(f"DEBUG: ❌ TBATS import fallito")
-    print(f"DEBUG: Tipo errore: {type(e).__name__}")
-    print(f"DEBUG: Messaggio: {str(e)[:200]}")
+    log_debug("DEBUG: ❌ TBATS import fallito")
+    log_debug(f"DEBUG: Tipo errore: {type(e).__name__}")
+    log_debug(f"DEBUG: Messaggio: {str(e)[:200]}")
     if 'numpy.dtype size changed' in str(e):
-        print("⚠️  TBATS: Errore compatibilità numpy/pmdarima")
-        print("Soluzione: pip uninstall -y tbats pmdarima && pip install --no-cache-dir tbats")
+        log_debug("⚠️  TBATS: Errore compatibilità numpy/pmdarima")
+        log_debug("Soluzione: pip uninstall -y tbats pmdarima && pip install --no-cache-dir tbats")
     else:
-        print("NOTA: TBATS non disponibile (opzionale)")
-        print("Per multiple stagionalità avanzate: pip install tbats")
+        log_debug("NOTA: TBATS non disponibile (opzionale)")
+        log_debug("Per multiple stagionalità avanzate: pip install tbats")
 except Exception as e:
     TBATS_AVAILABLE = False
-    print(f"DEBUG: ❌ TBATS errore inaspettato: {type(e).__name__}: {e}")
+    log_debug(f"DEBUG: ❌ TBATS errore inaspettato: {type(e).__name__}: {e}")
     import traceback
-    traceback.print_exc()
+    log_debug(traceback.format_exc())
 
 # Configurazione grafica
 plt.rcParams['figure.figsize'] = (15, 8)
@@ -852,11 +863,13 @@ def forecast_settimanale_fallback(weekly, weeks_ahead):
     forecast_values = [ma_value + trend * i for i in range(1, weeks_ahead + 1)]
     forecast_values = [max(0, v) for v in forecast_values]
     ultima_settimana = weekly['SETTIMANA'].max() if not weekly.empty else 0
+    residuals = weekly['TOTALE'].rolling(4, min_periods=2).mean() - weekly['TOTALE']
+    lower, upper = _stima_intervallo_confidenza(residuals.values, forecast_values, fallback_ratio=0.2)
     return pd.DataFrame({
         'SETTIMANA': range(int(ultima_settimana) + 1, int(ultima_settimana) + weeks_ahead + 1),
         'FORECAST': forecast_values,
-        'CI_LOWER': [v * 0.85 for v in forecast_values],
-        'CI_UPPER': [v * 1.15 for v in forecast_values]
+        'CI_LOWER': lower,
+        'CI_UPPER': upper
     })
 
 
@@ -893,12 +906,14 @@ def forecast_giornaliero_fallback(daily, giorni_forecast):
         forecast_val = (base_value + trend * (i + 1)) * dow_factor
         forecasts.append(max(0.0, forecast_val))
 
+    residuals = daily['OFFERTO'].diff().dropna()
+    lower, upper = _stima_intervallo_confidenza(residuals.values, forecasts, fallback_ratio=0.2)
     return pd.DataFrame({
         'DATA': future_dates,
         'FORECAST': forecasts,
         'GG_SETT': [['lun','mar','mer','gio','ven','sab','dom'][d.weekday()] for d in future_dates],
-        'CI_LOWER': [v * 0.85 for v in forecasts],
-        'CI_UPPER': [v * 1.15 for v in forecasts]
+        'CI_LOWER': lower,
+        'CI_UPPER': upper
     })
 
 
@@ -938,6 +953,106 @@ def _distribuisci_forecast_per_fascia(pattern_intraday, daily_forecast_df):
         pattern['FORECAST_FASCIA'] = row_day['FORECAST'] * pattern['PERCENTUALE']
         forecast_fascia_list.append(pattern[['DATA', 'GG_SETT', 'FASCIA', 'MINUTI',
                                              'FORECAST_GIORNO', 'PERCENTUALE', 'FORECAST_FASCIA']])
+
+
+def _stima_intervallo_confidenza(residuals, forecast_values, fallback_ratio=0.15):
+    residuals = np.asarray(residuals)
+    resid_std = np.nanstd(residuals, ddof=1) if residuals.size > 1 else np.nan
+    if not np.isfinite(resid_std) or resid_std == 0:
+        lower = np.clip(np.array(forecast_values) * (1 - fallback_ratio), a_min=0, a_max=None)
+        upper = np.array(forecast_values) * (1 + fallback_ratio)
+    else:
+        ci_delta = 1.96 * resid_std
+        lower = np.clip(np.array(forecast_values) - ci_delta, a_min=0, a_max=None)
+        upper = np.array(forecast_values) + ci_delta
+    return lower, upper
+
+
+def _compute_error_metrics(actual, predicted):
+    mask = actual.notna() & predicted.notna()
+    if not mask.any():
+        return None
+    actual_valid = actual[mask]
+    predicted_valid = predicted[mask]
+    mae = float(np.mean(np.abs(actual_valid - predicted_valid)))
+    mape = float(np.mean(np.abs((actual_valid - predicted_valid) / np.clip(actual_valid, 1e-8, None))) * 100)
+    smape = float(np.mean(
+        2 * np.abs(predicted_valid - actual_valid) / (np.abs(actual_valid) + np.abs(predicted_valid) + 1e-8)
+    ) * 100)
+    return {'MAE': mae, 'MAPE': mape, 'SMAPE': smape}
+
+
+def _run_forecast_for_backtest(metodo, df_train, horizon):
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            if metodo == 'holtwinters':
+                return _forecast_holtwinters(df_train, output_dir=tmpdir, giorni_forecast=horizon, produce_outputs=False)
+            if metodo == 'pattern':
+                return _forecast_pattern_based(df_train, horizon)
+            if metodo == 'naive':
+                return _forecast_naive_baseline(df_train, horizon)
+            if metodo == 'sarima':
+                return _forecast_sarima(df_train, giorni_forecast=horizon, produce_outputs=False)
+            if metodo == 'prophet':
+                return _forecast_prophet(df_train, giorni_forecast=horizon, produce_outputs=False)
+            if metodo == 'tbats':
+                return _forecast_tbats(df_train, giorni_forecast=horizon, produce_outputs=False)
+            if metodo == 'intraday_dinamico':
+                return _forecast_intraday_dinamico(df_train, giorni_forecast=horizon, produce_outputs=False)
+    except Exception as exc:
+        log_debug(f"Backtest {metodo} fallito: {exc}")
+    return None
+
+
+def _esegui_backtest(df, metodi, giorni_forecast):
+    print("\nESECUZIONE BACKTEST (rolling origin)")
+    print("=" * 80)
+    daily_series = df.groupby('DATA')['OFFERTO'].sum().sort_index()
+    horizon = min(14, max(7, giorni_forecast))
+    min_train = max(28, horizon * 2)
+    step = max(7, horizon // 2)
+
+    if len(daily_series) <= min_train + horizon:
+        print(f"⚠️  Backtest non eseguito: dati insufficienti (servono almeno {min_train + horizon} giorni, trovati {len(daily_series)})")
+        return {}
+
+    dates = daily_series.index.to_list()
+    metrics = {m: [] for m in metodi}
+
+    for start_idx in range(min_train, len(dates) - horizon + 1, step):
+        train_end = dates[start_idx - 1]
+        test_dates = dates[start_idx:start_idx + horizon]
+        df_train = df[df['DATA'] <= train_end]
+        actual = daily_series.loc[test_dates]
+
+        for metodo in metodi:
+            result = _run_forecast_for_backtest(metodo, df_train, horizon)
+            if result is None or 'giornaliero' not in result:
+                continue
+            forecast_df = result['giornaliero'].copy()
+            predicted = forecast_df.set_index('DATA')['FORECAST'].reindex(test_dates)
+            metric = _compute_error_metrics(actual, predicted)
+            if metric:
+                metrics[metodo].append(metric)
+
+    summary = {}
+    for metodo, valori in metrics.items():
+        if not valori:
+            continue
+        summary[metodo] = {
+            'MAE': float(np.mean([v['MAE'] for v in valori])),
+            'MAPE': float(np.mean([v['MAPE'] for v in valori])),
+            'SMAPE': float(np.mean([v['SMAPE'] for v in valori]))
+        }
+
+    if summary:
+        print("Metriche medie (rolling):")
+        for metodo, valori in summary.items():
+            print(f" - {metodo}: MAE={valori['MAE']:.2f}, MAPE={valori['MAPE']:.2f}%, SMAPE={valori['SMAPE']:.2f}%")
+    else:
+        print("⚠️  Nessuna metrica calcolata (modelli non disponibili sui dati di train)")
+
+    return summary
     if not forecast_fascia_list:
         return pd.DataFrame(columns=['DATA', 'GG_SETT', 'FASCIA', 'MINUTI',
                                      'FORECAST_GIORNO', 'PERCENTUALE', 'FORECAST_FASCIA'])
@@ -1081,14 +1196,15 @@ def _forecast_naive_baseline(df, giorni_forecast):
     future_dates = pd.date_range(start=daily.index.max() + timedelta(days=1),
                                  periods=giorni_forecast, freq='D')
     forecasts = np.full(giorni_forecast, last_value)
-    ci_window = max(0.15 * last_value, 1)
+    residuals = daily['OFFERTO'].diff().dropna()
+    lower, upper = _stima_intervallo_confidenza(residuals.values, forecasts, fallback_ratio=0.15)
 
     forecast_daily_df = pd.DataFrame({
         'DATA': future_dates,
         'FORECAST': forecasts,
         'GG_SETT': [['lun','mar','mer','gio','ven','sab','dom'][d.weekday()] for d in future_dates],
-        'CI_LOWER': np.clip(forecasts - ci_window, a_min=0, a_max=None),
-        'CI_UPPER': forecasts + ci_window
+        'CI_LOWER': lower,
+        'CI_UPPER': upper
     })
 
     pattern_intraday = _costruisci_pattern_intraday(df)
@@ -1457,57 +1573,72 @@ def genera_forecast_modelli(df, output_dir, giorni_forecast=28, metodi=None, esc
 
     risultati = {}
     confronto_frames = []
+    stati_modelli = []
 
     for metodo in metodi:
         metodo = metodo.lower()
-        if metodo == 'holtwinters':
-            risultati[metodo] = _forecast_holtwinters(df, output_dir, giorni_forecast, produce_outputs=True)
-        elif metodo == 'pattern':
-            risultati[metodo] = _forecast_pattern_based(df, giorni_forecast)
-            if risultati[metodo] is not None:
-                actual_path = _salva_forecast_excel(output_dir, 'forecast_pattern.xlsx', risultati[metodo])
-                print(f"   Forecast pattern salvato: {actual_path.name}")
-        elif metodo == 'naive':
-            risultati[metodo] = _forecast_naive_baseline(df, giorni_forecast)
-            if risultati[metodo] is not None:
-                actual_path = _salva_forecast_excel(output_dir, 'forecast_naive.xlsx', risultati[metodo])
-                print(f"   Forecast naive salvato: {actual_path.name}")
-        elif metodo == 'sarima':
-            risultati[metodo] = _forecast_sarima(df, giorni_forecast, produce_outputs=False)
-            if risultati[metodo] is not None:
-                actual_path = _salva_forecast_excel(output_dir, 'forecast_sarima.xlsx', risultati[metodo])
-                print(f"   Forecast SARIMA salvato: {actual_path.name}")
-        elif metodo == 'prophet':
-            risultati[metodo] = _forecast_prophet(df, giorni_forecast, produce_outputs=False, escludi_festivita=escludi_festivita)
-            if risultati[metodo] is not None:
-                actual_path = _salva_forecast_excel(output_dir, 'forecast_prophet.xlsx', risultati[metodo])
-                print(f"   Forecast Prophet salvato: {actual_path.name}")
-        elif metodo == 'tbats':
-            print(f"   Avvio TBATS...")
-            risultati[metodo] = _forecast_tbats(df, giorni_forecast, produce_outputs=True)
-            if risultati[metodo] is not None:
-                actual_path = _salva_forecast_excel(output_dir, 'forecast_tbats.xlsx', risultati[metodo])
-                print(f"   ✅ Forecast TBATS salvato: {actual_path.name}")
+        detail = ""
+        success = False
+        try:
+            if metodo == 'holtwinters':
+                risultati[metodo] = _forecast_holtwinters(df, output_dir, giorni_forecast, produce_outputs=True)
+            elif metodo == 'pattern':
+                risultati[metodo] = _forecast_pattern_based(df, giorni_forecast)
+                if risultati[metodo] is not None:
+                    actual_path = _salva_forecast_excel(output_dir, 'forecast_pattern.xlsx', risultati[metodo])
+                    print(f"   Forecast pattern salvato: {actual_path.name}")
+            elif metodo == 'naive':
+                risultati[metodo] = _forecast_naive_baseline(df, giorni_forecast)
+                if risultati[metodo] is not None:
+                    actual_path = _salva_forecast_excel(output_dir, 'forecast_naive.xlsx', risultati[metodo])
+                    print(f"   Forecast naive salvato: {actual_path.name}")
+            elif metodo == 'sarima':
+                risultati[metodo] = _forecast_sarima(df, giorni_forecast, produce_outputs=False)
+                if risultati[metodo] is not None:
+                    actual_path = _salva_forecast_excel(output_dir, 'forecast_sarima.xlsx', risultati[metodo])
+                    print(f"   Forecast SARIMA salvato: {actual_path.name}")
+            elif metodo == 'prophet':
+                risultati[metodo] = _forecast_prophet(df, giorni_forecast, produce_outputs=False, escludi_festivita=escludi_festivita)
+                if risultati[metodo] is not None:
+                    actual_path = _salva_forecast_excel(output_dir, 'forecast_prophet.xlsx', risultati[metodo])
+                    print(f"   Forecast Prophet salvato: {actual_path.name}")
+            elif metodo == 'tbats':
+                print(f"   Avvio TBATS...")
+                risultati[metodo] = _forecast_tbats(df, giorni_forecast, produce_outputs=True)
+                if risultati[metodo] is not None:
+                    actual_path = _salva_forecast_excel(output_dir, 'forecast_tbats.xlsx', risultati[metodo])
+                    print(f"   ✅ Forecast TBATS salvato: {actual_path.name}")
+                else:
+                    detail = "TBATS non generato (dipendenze o dati insufficienti)"
+                    print(f"   ⚠️  Forecast TBATS non generato (verifica messaggi sopra)")
+            elif metodo == 'intraday_dinamico':
+                print(f"   Avvio Forecast Intraday Dinamico...")
+                risultati[metodo] = _forecast_intraday_dinamico(df, giorni_forecast, produce_outputs=True)
+                if risultati[metodo] is not None:
+                    actual_path = _salva_forecast_excel(output_dir, 'forecast_intraday_dinamico.xlsx', risultati[metodo])
+                    print(f"   ✅ Forecast Intraday Dinamico salvato: {actual_path.name}")
+                else:
+                    detail = "Intraday dinamico non disponibile (dipendenze o dati insufficienti)"
+                    print(f"   ⚠️  Forecast Intraday Dinamico non generato (verifica messaggi sopra)")
             else:
-                print(f"   ⚠️  TBATS non generato (verifica messaggi sopra)")
-        elif metodo == 'intraday_dinamico':
-            print(f"   Avvio Forecast Intraday Dinamico...")
-            risultati[metodo] = _forecast_intraday_dinamico(df, giorni_forecast, produce_outputs=True)
-            if risultati[metodo] is not None:
-                actual_path = _salva_forecast_excel(output_dir, 'forecast_intraday_dinamico.xlsx', risultati[metodo])
-                print(f"   ✅ Forecast Intraday Dinamico salvato: {actual_path.name}")
-            else:
-                print(f"   ⚠️  Forecast Intraday Dinamico non generato (verifica messaggi sopra)")
-        else:
-            print(f"   Metodo forecast '{metodo}' non riconosciuto, ignorato.")
-            risultati[metodo] = None
+                print(f"   Metodo forecast '{metodo}' non riconosciuto, ignorato.")
+                risultati[metodo] = None
+                detail = "Metodo non riconosciuto"
 
-        result = risultati.get(metodo)
-        if result is None:
-            continue
-        daily_df = result['giornaliero'][['DATA', 'FORECAST']].copy()
-        daily_df.rename(columns={'FORECAST': metodo}, inplace=True)
-        confronto_frames.append(daily_df)
+            result = risultati.get(metodo)
+            if result is not None and 'giornaliero' in result and not result['giornaliero'].empty:
+                success = True
+                detail = detail or "Completato"
+                daily_df = result['giornaliero'][['DATA', 'FORECAST']].copy()
+                daily_df.rename(columns={'FORECAST': metodo}, inplace=True)
+                confronto_frames.append(daily_df)
+            else:
+                detail = detail or "Nessun output generato"
+        except Exception as exc:
+            risultati[metodo] = None
+            detail = f"Errore: {exc}"
+
+        stati_modelli.append({'metodo': metodo, 'successo': success, 'dettaglio': detail})
 
     if confronto_frames:
         confronto = confronto_frames[0]
@@ -1520,6 +1651,17 @@ def genera_forecast_modelli(df, output_dir, giorni_forecast=28, metodi=None, esc
 
         # Genera grafico di confronto
         _genera_grafico_confronto_modelli(confronto, output_dir)
+
+    if stati_modelli:
+        print("\nRIEPILOGO STATO MODELLI")
+        print("-" * 80)
+        for stato in stati_modelli:
+            simbolo = "✅" if stato['successo'] else "⚠️"
+            print(f" {simbolo} {stato['metodo']}: {stato['dettaglio']}")
+
+    backtest_metrics = _esegui_backtest(df, metodi, giorni_forecast)
+    if backtest_metrics:
+        risultati['backtest'] = backtest_metrics
 
     return risultati
 
@@ -2128,6 +2270,10 @@ def genera_report_riassuntivo(risultati, script_dir):
         print(f"⚠️  Errore generazione report riassuntivo: {e}")
 
 if __name__ == "__main__":
+    print("\n" + "=" * 80)
+    print(f"SCRIPT AGGIORNATO: versione {SCRIPT_VERSION} (ultimo update: {LAST_UPDATE})")
+    print("=" * 80 + "\n")
+
     print("=" * 80)
     print("VERIFICA LIBRERIE DISPONIBILI")
     print("=" * 80)
