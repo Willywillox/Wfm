@@ -40,6 +40,8 @@ VERSIONE: 2.0 Enhanced (con multiple stagionalità)
 SCRIPT_VERSION = "2.1.1"
 LAST_UPDATE = "2025-11-21"
 
+import matplotlib
+matplotlib.use("Agg")
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -954,6 +956,11 @@ def _distribuisci_forecast_per_fascia(pattern_intraday, daily_forecast_df):
         forecast_fascia_list.append(pattern[['DATA', 'GG_SETT', 'FASCIA', 'MINUTI',
                                              'FORECAST_GIORNO', 'PERCENTUALE', 'FORECAST_FASCIA']])
 
+    if not forecast_fascia_list:
+        return pd.DataFrame(columns=['DATA', 'GG_SETT', 'FASCIA', 'MINUTI',
+                                     'FORECAST_GIORNO', 'PERCENTUALE', 'FORECAST_FASCIA'])
+    return pd.concat(forecast_fascia_list, ignore_index=True)
+
 
 def _stima_intervallo_confidenza(residuals, forecast_values, fallback_ratio=0.15):
     residuals = np.asarray(residuals)
@@ -1053,10 +1060,6 @@ def _esegui_backtest(df, metodi, giorni_forecast):
         print("⚠️  Nessuna metrica calcolata (modelli non disponibili sui dati di train)")
 
     return summary
-    if not forecast_fascia_list:
-        return pd.DataFrame(columns=['DATA', 'GG_SETT', 'FASCIA', 'MINUTI',
-                                     'FORECAST_GIORNO', 'PERCENTUALE', 'FORECAST_FASCIA'])
-    return pd.concat(forecast_fascia_list, ignore_index=True)
 
 
 def _forecast_intraday_dinamico(df, giorni_forecast=28, produce_outputs=False):
