@@ -136,21 +136,38 @@ sns.set_palette("husl")
 # =============================================================================
 
 def trova_file_excel():
-    """Trova automaticamente tutti i file Excel nella cartella dello script"""
+    """Trova automaticamente tutti i file Excel nella cartella dello script."""
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    file_excel = glob.glob(os.path.join(script_dir, '*.xlsx'))
+
+    search_roots = [script_dir]
+    input_dir = os.path.join(script_dir, "file input")
+    if os.path.isdir(input_dir):
+        search_roots.append(input_dir)
+
+    patterns = ["*.xlsx", "*.xlsm", "*.xls"]
+    file_excel = []
+    for root in search_roots:
+        for pattern in patterns:
+            file_excel.extend(glob.glob(os.path.join(root, pattern)))
+
     # Escludi file temporanei e file già nella cartella output
     file_excel = [f for f in file_excel if not os.path.basename(f).startswith('~$')]
     file_excel = [f for f in file_excel if 'output' not in f]
 
+    # Rimuovi duplicati e ordina per nome per una stampa stabile
+    file_excel = sorted(set(file_excel), key=lambda p: os.path.basename(p).lower())
+
     if len(file_excel) == 0:
-        raise FileNotFoundError("Nessun file Excel trovato nella cartella dello script")
+        raise FileNotFoundError(
+            "Nessun file Excel trovato: aggiungi i file nella stessa cartella dello script o in 'file input'"
+        )
 
     print(f"\n{'='*80}")
     print(f"TROVATI {len(file_excel)} FILE EXCEL DA PROCESSARE")
     print(f"{'='*80}")
     for i, f in enumerate(file_excel, 1):
-        print(f"  {i}. {os.path.basename(f)}")
+        root = os.path.basename(os.path.dirname(f))
+        print(f"  {i}. {os.path.basename(f)} (cartella: {root or '.'})")
     print(f"{'='*80}\n")
 
     return file_excel
