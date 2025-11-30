@@ -55,6 +55,9 @@ import warnings
 import tempfile
 warnings.filterwarnings('ignore')
 
+# Parametri globali per IC basate su quantili dei residui
+DEFAULT_ALPHA = 0.10  # 80% central interval by default
+
 VERBOSE = os.environ.get("FORECAST_VERBOSE", "0").lower() not in ("0", "false", "no", "")
 
 
@@ -76,6 +79,34 @@ def safe_excel_writer(path, **kwargs):
         yield writer, path
     finally:
         writer.close()
+
+
+def _interval_from_residuals(residuals, forecast_values, alpha=DEFAULT_ALPHA):
+    """Calcola intervalli di confidenza basati sui quantili dei residui.
+
+    Usa distribuzione empirica dei residui per stimare bande asimmetriche.
+    Se i residui non sono disponibili o sono costanti, fallback a +/-1.96*std.
+    """
+    forecast_values = np.asarray(forecast_values)
+    if residuals is None:
+        residuals = np.array([])
+    residuals = np.asarray(residuals)
+    residuals = residuals[~pd.isna(residuals)]
+
+    if residuals.size >= 10:
+        lower_q = np.quantile(residuals, alpha / 2)
+        upper_q = np.quantile(residuals, 1 - alpha / 2)
+        lower = forecast_values + lower_q
+        upper = forecast_values + upper_q
+    else:
+        resid_std = float(np.nanstd(residuals, ddof=1)) if residuals.size > 0 else 0.0
+        if not np.isfinite(resid_std) or resid_std == 0.0:
+            resid_std = float(np.nanstd(forecast_values, ddof=1) * 0.1)
+        delta = 1.96 * resid_std
+        lower = forecast_values - delta
+        upper = forecast_values + delta
+
+    return np.clip(lower, a_min=0, a_max=None), np.clip(upper, a_min=0, a_max=None)
 
 
 # Verifica librerie opzionali
@@ -670,15 +701,7 @@ def _forecast_holtwinters(df, output_dir, giorni_forecast=28, produce_outputs=Tr
             forecast_week = fit_week.forecast(steps=weeks_ahead)
 
             resid_week = np.asarray(fit_week.resid)
-            resid_std = float(np.nanstd(resid_week, ddof=1))
-            if not np.isfinite(resid_std) or resid_std == 0.0:
-                resid_std = float(np.nanstd(weekly['TOTALE'].values - fit_week.fittedvalues, ddof=1))
-            if not np.isfinite(resid_std) or resid_std == 0.0:
-                resid_std = float(np.nanstd(weekly['TOTALE'].values, ddof=1) * 0.1)
-
-            ci_delta = 1.96 * resid_std
-            lower = np.clip(forecast_week - ci_delta, a_min=0, a_max=None)
-            upper = forecast_week + ci_delta
+            lower, upper = _interval_from_residuals(resid_week, forecast_week)
 
             start_settimana = weekly['SETTIMANA'].max() + 1
             forecast_week_df = pd.DataFrame({
@@ -738,15 +761,9 @@ def _forecast_holtwinters(df, output_dir, giorni_forecast=28, produce_outputs=Tr
             })
 
             resid_daily = np.asarray(fit_daily.resid)
-            resid_std = float(np.nanstd(resid_daily, ddof=1))
-            if not np.isfinite(resid_std) or resid_std == 0.0:
-                resid_std = float(np.nanstd(daily['OFFERTO'].values - fit_daily.fittedvalues, ddof=1))
-            if not np.isfinite(resid_std) or resid_std == 0.0:
-                resid_std = float(np.nanstd(daily['OFFERTO'].values, ddof=1) * 0.1)
-
-            ci_delta = 1.96 * resid_std
-            forecast_daily_df['CI_LOWER'] = np.clip(forecast_daily_df['FORECAST'] - ci_delta, a_min=0, a_max=None)
-            forecast_daily_df['CI_UPPER'] = forecast_daily_df['FORECAST'] + ci_delta
+            lower, upper = _interval_from_residuals(resid_daily, forecast_daily_df['FORECAST'])
+            forecast_daily_df['CI_LOWER'] = lower
+            forecast_daily_df['CI_UPPER'] = upper
 
             observed_daily = daily['OFFERTO'].values
             sst_daily = np.sum((observed_daily - observed_daily.mean()) ** 2)
@@ -980,15 +997,10 @@ def _distribuisci_forecast_per_fascia(pattern_intraday, daily_forecast_df):
 
 
 def _stima_intervallo_confidenza(residuals, forecast_values, fallback_ratio=0.15):
-    residuals = np.asarray(residuals)
-    resid_std = np.nanstd(residuals, ddof=1) if residuals.size > 1 else np.nan
-    if not np.isfinite(resid_std) or resid_std == 0:
+    lower, upper = _interval_from_residuals(residuals, forecast_values)
+    if np.all(lower == 0) and np.all(upper == 0):
         lower = np.clip(np.array(forecast_values) * (1 - fallback_ratio), a_min=0, a_max=None)
         upper = np.array(forecast_values) * (1 + fallback_ratio)
-    else:
-        ci_delta = 1.96 * resid_std
-        lower = np.clip(np.array(forecast_values) - ci_delta, a_min=0, a_max=None)
-        upper = np.array(forecast_values) + ci_delta
     return lower, upper
 
 
@@ -1032,48 +1044,62 @@ def _esegui_backtest(df, metodi, giorni_forecast):
     print("\nESECUZIONE BACKTEST (rolling origin)")
     print("=" * 80)
     daily_series = df.groupby('DATA')['OFFERTO'].sum().sort_index()
-    horizon = min(14, max(7, giorni_forecast))
-    min_train = max(28, horizon * 2)
-    step = max(7, horizon // 2)
 
-    if len(daily_series) <= min_train + horizon:
-        print(f"⚠️  Backtest non eseguito: dati insufficienti (servono almeno {min_train + horizon} giorni, trovati {len(daily_series)})")
-        return {}
-
-    dates = daily_series.index.to_list()
-    metrics = {m: [] for m in metodi}
-
-    for start_idx in range(min_train, len(dates) - horizon + 1, step):
-        train_end = dates[start_idx - 1]
-        test_dates = dates[start_idx:start_idx + horizon]
-        df_train = df[df['DATA'] <= train_end]
-        actual = daily_series.loc[test_dates]
-
-        for metodo in metodi:
-            result = _run_forecast_for_backtest(metodo, df_train, horizon)
-            if result is None or 'giornaliero' not in result:
-                continue
-            forecast_df = result['giornaliero'].copy()
-            predicted = forecast_df.set_index('DATA')['FORECAST'].reindex(test_dates)
-            metric = _compute_error_metrics(actual, predicted)
-            if metric:
-                metrics[metodo].append(metric)
+    base_horizons = [14, 30, 60, 90, giorni_forecast]
+    horizons = sorted({h for h in base_horizons if h > 0})
 
     summary = {}
-    for metodo, valori in metrics.items():
-        if not valori:
-            continue
-        summary[metodo] = {
-            'MAE': float(np.mean([v['MAE'] for v in valori])),
-            'MAPE': float(np.mean([v['MAPE'] for v in valori])),
-            'SMAPE': float(np.mean([v['SMAPE'] for v in valori]))
-        }
+    for horizon in horizons:
+        horizon = int(horizon)
+        min_train = max(28, horizon * 2)
+        step = max(7, horizon // 2)
 
-    if summary:
-        print("Metriche medie (rolling):")
-        for metodo, valori in summary.items():
-            print(f" - {metodo}: MAE={valori['MAE']:.2f}, MAPE={valori['MAPE']:.2f}%, SMAPE={valori['SMAPE']:.2f}%")
-    else:
+        if len(daily_series) <= min_train + horizon:
+            print(f"⚠️  Backtest {horizon} giorni saltato: servono almeno {min_train + horizon} giorni, trovati {len(daily_series)}")
+            continue
+
+        dates = daily_series.index.to_list()
+        metrics = {m: [] for m in metodi}
+
+        for start_idx in range(min_train, len(dates) - horizon + 1, step):
+            train_end = dates[start_idx - 1]
+            test_dates = dates[start_idx:start_idx + horizon]
+            df_train = df[df['DATA'] <= train_end]
+            actual = daily_series.loc[test_dates]
+
+            for metodo in metodi:
+                result = _run_forecast_for_backtest(metodo, df_train, horizon)
+                if result is None or 'giornaliero' not in result:
+                    continue
+                forecast_df = result['giornaliero'].copy()
+                predicted = forecast_df.set_index('DATA')['FORECAST'].reindex(test_dates)
+                metric = _compute_error_metrics(actual, predicted)
+                if metric:
+                    metrics[metodo].append(metric)
+
+        print(f"Metriche medie (rolling) - orizzonte {horizon} giorni:")
+        for metodo, valori in metrics.items():
+            if not valori:
+                continue
+            summary.setdefault(metodo, {'by_horizon': {}})
+            summary[metodo]['by_horizon'][horizon] = {
+                'MAE': float(np.mean([v['MAE'] for v in valori])),
+                'MAPE': float(np.mean([v['MAPE'] for v in valori])),
+                'SMAPE': float(np.mean([v['SMAPE'] for v in valori]))
+            }
+            valori_h = summary[metodo]['by_horizon'][horizon]
+            print(f" - {metodo}: MAE={valori_h['MAE']:.2f}, MAPE={valori_h['MAPE']:.2f}%, SMAPE={valori_h['SMAPE']:.2f}%")
+
+    # Calcola media complessiva per compatibilità
+    for metodo, valori in summary.items():
+        all_metrics = list(valori.get('by_horizon', {}).values())
+        if not all_metrics:
+            continue
+        summary[metodo]['MAE'] = float(np.mean([m['MAE'] for m in all_metrics]))
+        summary[metodo]['MAPE'] = float(np.mean([m['MAPE'] for m in all_metrics]))
+        summary[metodo]['SMAPE'] = float(np.mean([m['SMAPE'] for m in all_metrics]))
+
+    if not summary:
         print("⚠️  Nessuna metrica calcolata (modelli non disponibili sui dati di train)")
 
     return summary
@@ -1580,20 +1606,33 @@ def _scegli_miglior_modello(backtest_metrics, available_models):
     """Seleziona il modello con la MAPE più bassa tra quelli disponibili."""
     if not backtest_metrics:
         return None
+    target_horizon = None
+    for m in backtest_metrics.values():
+        horizons = list(m.get('by_horizon', {}).keys())
+        if horizons:
+            target_horizon = max(horizons)
+            break
+    if target_horizon is None:
+        # fallback: usa la chiave orizzonte massima disponibile
+        target_horizon = max([max(m.get('by_horizon', {0: 0}).keys()) for m in backtest_metrics.values()])
 
-    metrics_df = pd.DataFrame(backtest_metrics).T
-    metrics_df.index.name = 'modello'
+    candidates = []
+    for model, valori in backtest_metrics.items():
+        by_h = valori.get('by_horizon', {})
+        if not by_h:
+            continue
+        nearest_h = min(by_h.keys(), key=lambda h: abs(h - target_horizon))
+        metrics = by_h[nearest_h]
+        candidates.append((model, nearest_h, metrics.get('MAPE', np.inf)))
 
-    if 'MAPE' not in metrics_df.columns:
+    if not candidates:
         return None
 
-    metrics_df = metrics_df.loc[metrics_df.index.intersection(available_models)]
-    metrics_df = metrics_df.replace([np.inf, -np.inf], np.nan).dropna(subset=['MAPE'])
-
-    if metrics_df.empty:
-        return None
-
-    return metrics_df.sort_values('MAPE').index[0]
+    candidates.sort(key=lambda x: x[2])
+    for model, _, _ in candidates:
+        if model in available_models:
+            return model
+    return None
 
 
 def _salva_forecast_completo(output_dir, confronto_df, backtest_metrics, best_model=None):
@@ -1619,8 +1658,24 @@ def _salva_forecast_completo(output_dir, confronto_df, backtest_metrics, best_mo
         if backtest_metrics:
             metrics_df = pd.DataFrame(backtest_metrics).T
             ordered_cols = [c for c in ['MAE', 'MAPE', 'SMAPE'] if c in metrics_df.columns]
-            metrics_df = metrics_df[ordered_cols].sort_values('MAPE')
+            metrics_df = metrics_df[ordered_cols].sort_values('MAPE') if not metrics_df.empty else metrics_df
             metrics_df.to_excel(writer, sheet_name='Metriche_Backtest')
+
+            # Esporta il dettaglio per orizzonte
+            rows = []
+            for modello, valori in backtest_metrics.items():
+                for horizon, metriche in valori.get('by_horizon', {}).items():
+                    rows.append({
+                        'modello': modello,
+                        'orizzonte_giorni': horizon,
+                        'MAE': metriche.get('MAE'),
+                        'MAPE': metriche.get('MAPE'),
+                        'SMAPE': metriche.get('SMAPE')
+                    })
+            if rows:
+                pd.DataFrame(rows).sort_values(['orizzonte_giorni', 'MAPE']).to_excel(
+                    writer, sheet_name='Metriche_per_Orizzonte', index=False
+                )
 
         summary_rows = []
         if best_model:
@@ -1636,6 +1691,23 @@ def _salva_forecast_completo(output_dir, confronto_df, backtest_metrics, best_mo
             pd.DataFrame(summary_rows).to_excel(writer, sheet_name='Sintesi', index=False)
 
     print(f"   File completo modelli salvato: {actual_path.name}")
+
+    # Monitoraggio rapido: salva una sintesi plain-text per confronti futuri
+    monitor_path = Path(output_dir) / 'monitoraggio_metriche.txt'
+    with open(monitor_path, 'a', encoding='utf-8') as f:
+        f.write(f"Run del {datetime.now():%Y-%m-%d %H:%M:%S}\n")
+        if best_model and best_metrics:
+            f.write(f"Best model: {best_model} | MAE={best_metrics.get('MAE'):.2f} "
+                    f"MAPE={best_metrics.get('MAPE'):.2f}% SMAPE={best_metrics.get('SMAPE'):.2f}%\n")
+        if backtest_metrics:
+            for modello, valori in backtest_metrics.items():
+                by_h = valori.get('by_horizon', {})
+                if by_h:
+                    best_h = min(by_h, key=lambda h: by_h[h].get('MAPE', np.inf))
+                    m = by_h[best_h]
+                    f.write(f" - {modello}: MAPE migliore {m.get('MAPE'):.2f}% a {best_h} giorni\n")
+        f.write("\n")
+
     return actual_path
 
 
@@ -1750,7 +1822,8 @@ def genera_forecast_modelli(df, output_dir, giorni_forecast=28, metodi=None, esc
 
     if confronto is not None:
         available_models = [col for col in confronto.columns if col != 'DATA']
-        best_model = _scegli_miglior_modello(backtest_metrics, available_models)
+        if backtest_metrics:
+            best_model = _scegli_miglior_modello(backtest_metrics, available_models)
         _salva_forecast_completo(output_dir, confronto, backtest_metrics, best_model)
 
     if best_model:
