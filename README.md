@@ -19,3 +19,6 @@ Per scegliere rapidamente il forecast:
 4. Valuta anche MAE/RMSE per capire l’errore medio assoluto in unità di chiamate: valori più bassi significano previsioni più vicine ai dati reali.
 
 Questa lettura, insieme al riepilogo di stato dei modelli stampato in console, ti indica quale forecast usare per l’orizzonte richiesto.
+
+### Perché vedi solo tre modelli nel file di backtest
+`valutazione_forecast.xlsx` contiene **solo Holt-Winters, Naive e MA7** per mantenere il backtest rolling veloce e indipendente dalle librerie opzionali (Prophet, TBATS, ecc.). Gli altri modelli vengono comunque eseguiti nella fase di “FORECAST multi-modello”: verifica nel log “RIEPILOGO STATO MODELLI” che abbiano prodotto output (✅) e usa `forecast_confronto_modelli.xlsx` / `confronto_modelli_forecast.png` per confrontarli. Se hai tutte le dipendenze installate, il blocco finale “ESECUZIONE BACKTEST (rolling origin)” calcola le metriche anche per quei modelli riusciti.
