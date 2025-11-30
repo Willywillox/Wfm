@@ -47,3 +47,12 @@ resta comunque utile per confrontare visivamente tutte le curve.
 - **Backtest multi-orizzonte**: le metriche rolling vengono calcolate su 14/30/60/90 giorni (oltre all’orizzonte richiesto). Il modello “migliore” viene scelto sul MAPE dell’orizzonte più vicino a quello chiesto, ma trovi tutte le metriche nel foglio `Metriche_per_Orizzonte`.
 - **Monitoraggio run-to-run**: `monitoraggio_metriche.txt` elenca timestamp, modello vincente e MAPE migliore per orizzonte, così puoi vedere se le performance stanno migliorando dopo ogni aggiornamento dati.
 - **Ensemble automatico**: quando almeno due modelli hanno metriche disponibili, viene creata la curva `ensemble_top2` come media dei migliori due (per MAPE sull’orizzonte più vicino). È utile se nessun modello singolo domina nettamente o se vuoi un forecast più stabile.
+
+### Checklist rapida: quando considerare “pronto per la produzione”
+- **Dipendenze opzionali disponibili**: Prophet e TBATS installati (`pip install prophet tbats holidays`) per coprire stagionalità complesse e festività. Se mancano, il best model può ricadere su Holt-Winters o ensemble e perdere parte della stagionalità.
+- **Backtest eseguito su tutti gli orizzonti**: controlla che `Metriche_per_Orizzonte` abbia valori per 14/30/60/90 giorni e per l’orizzonte richiesto; se mancano, il dataset potrebbe essere troppo corto o qualche modello non ha convergito.
+- **Ensemble calcolato**: verifica nel riepilogo console che `ensemble_top2` sia stato creato e che compaia in `forecast_tutti_modelli.xlsx`; è il modo più sicuro per ottenere un forecast stabile se i singoli modelli sono vicini.
+- **Intervalli credibili**: assicurati che le colonne LOW/HIGH non siano piatte o vuote; se succede, vuol dire che i residui erano pochi e le bande sono state approssimate con lo std della serie.
+- **Monitoraggio coerente**: apri `monitoraggio_metriche.txt` e verifica che la MAPE del modello vincente non stia peggiorando run dopo run; in caso contrario aumenta la finestra storica o ricalibra i parametri (es. stagionalità) prima di usare il forecast.
+
+Se tutte le voci sopra sono soddisfatte, il flusso è nelle migliori condizioni per restituire forecast affidabili; in caso contrario il sistema resta utilizzabile ma con margini di errore più ampi.
