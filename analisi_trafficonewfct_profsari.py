@@ -1576,6 +1576,55 @@ def _salva_forecast_excel(output_dir, nome_file, forecast_data):
     return actual_path
 
 
+def _scegli_miglior_modello(backtest_metrics, available_models):
+    """Seleziona il modello con la MAPE più bassa tra quelli disponibili."""
+    if not backtest_metrics:
+        return None
+
+    metrics_df = pd.DataFrame(backtest_metrics).T
+    metrics_df.index.name = 'modello'
+
+    if 'MAPE' not in metrics_df.columns:
+        return None
+
+    metrics_df = metrics_df.loc[metrics_df.index.intersection(available_models)]
+    metrics_df = metrics_df.replace([np.inf, -np.inf], np.nan).dropna(subset=['MAPE'])
+
+    if metrics_df.empty:
+        return None
+
+    return metrics_df.sort_values('MAPE').index[0]
+
+
+def _salva_forecast_completo(output_dir, confronto_df, backtest_metrics, best_model=None):
+    """Crea un unico file Excel con tutti i forecast e il migliore evidenziato."""
+    output_path = Path(output_dir) / 'forecast_tutti_modelli.xlsx'
+
+    confronto_export = confronto_df.copy()
+    if best_model and best_model in confronto_export.columns:
+        confronto_export['BEST_FORECAST'] = confronto_export[best_model]
+
+    with safe_excel_writer(output_path, engine='openpyxl') as (writer, actual_path):
+        confronto_export.to_excel(writer, sheet_name='Forecast_Tutti_Modelli', index=False)
+
+        if backtest_metrics:
+            metrics_df = pd.DataFrame(backtest_metrics).T
+            ordered_cols = [c for c in ['MAE', 'MAPE', 'SMAPE'] if c in metrics_df.columns]
+            metrics_df = metrics_df[ordered_cols].sort_values('MAPE')
+            metrics_df.to_excel(writer, sheet_name='Metriche_Backtest')
+
+        summary_rows = []
+        if best_model:
+            summary_rows.append({'chiave': 'Miglior modello', 'valore': best_model})
+        if backtest_metrics:
+            summary_rows.append({'chiave': 'Modelli valutati', 'valore': ', '.join(sorted(backtest_metrics.keys()))})
+        if summary_rows:
+            pd.DataFrame(summary_rows).to_excel(writer, sheet_name='Sintesi', index=False)
+
+    print(f"   File completo modelli salvato: {actual_path.name}")
+    return actual_path
+
+
 def genera_forecast_modelli(df, output_dir, giorni_forecast=28, metodi=None, escludi_festivita=None):
     """
     Esegue più modelli di forecast in parallelo e produce un confronto.
@@ -1660,6 +1709,7 @@ def genera_forecast_modelli(df, output_dir, giorni_forecast=28, metodi=None, esc
 
         stati_modelli.append({'metodo': metodo, 'successo': success, 'dettaglio': detail})
 
+    confronto = None
     if confronto_frames:
         confronto = confronto_frames[0]
         for frame in confronto_frames[1:]:
@@ -1680,8 +1730,18 @@ def genera_forecast_modelli(df, output_dir, giorni_forecast=28, metodi=None, esc
             print(f" {simbolo} {stato['metodo']}: {stato['dettaglio']}")
 
     backtest_metrics = _esegui_backtest(df, metodi, giorni_forecast)
+    best_model = None
     if backtest_metrics:
         risultati['backtest'] = backtest_metrics
+
+    if confronto is not None:
+        available_models = [col for col in confronto.columns if col != 'DATA']
+        best_model = _scegli_miglior_modello(backtest_metrics, available_models)
+        _salva_forecast_completo(output_dir, confronto, backtest_metrics, best_model)
+
+    if best_model:
+        risultati['miglior_modello'] = best_model
+        print(f"\n   Miglior modello selezionato dal backtest: {best_model}")
 
     return risultati
 
