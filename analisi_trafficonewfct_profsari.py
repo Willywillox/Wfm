@@ -1635,6 +1635,77 @@ def _scegli_miglior_modello(backtest_metrics, available_models):
     return None
 
 
+def _seleziona_top_modelli(backtest_metrics, available_models, top_k=2):
+    """Ritorna i migliori modelli per MAPE, in base all'orizzonte più vicino."""
+    if not backtest_metrics:
+        return []
+
+    # Identifica l'orizzonte target come quello più lungo disponibile
+    target_horizon = None
+    for valori in backtest_metrics.values():
+        horizons = list(valori.get('by_horizon', {}).keys())
+        if horizons:
+            target_horizon = max(horizons)
+            break
+    if target_horizon is None:
+        all_h = [max(m.get('by_horizon', {0: 0}).keys()) for m in backtest_metrics.values() if m.get('by_horizon')]
+        target_horizon = max(all_h) if all_h else None
+
+    if target_horizon is None:
+        return []
+
+    candidates = []
+    for model, valori in backtest_metrics.items():
+        if model not in available_models:
+            continue
+        by_h = valori.get('by_horizon', {})
+        if not by_h:
+            continue
+        nearest_h = min(by_h.keys(), key=lambda h: abs(h - target_horizon))
+        mape = by_h[nearest_h].get('MAPE', np.inf)
+        candidates.append((model, nearest_h, mape))
+
+    candidates.sort(key=lambda x: x[2])
+    return [c[0] for c in candidates[:top_k]]
+
+
+def _combina_metriche_ensemble(backtest_metrics, modelli):
+    """Calcola metriche medie per un ensemble basato su modelli esistenti."""
+    if not modelli:
+        return None
+
+    horizons = set()
+    for modello in modelli:
+        horizons.update(backtest_metrics.get(modello, {}).get('by_horizon', {}).keys())
+
+    if not horizons:
+        return None
+
+    agg = {'by_horizon': {}}
+    for h in sorted(horizons):
+        metrics = []
+        for modello in modelli:
+            m = backtest_metrics.get(modello, {}).get('by_horizon', {}).get(h)
+            if m:
+                metrics.append(m)
+        if not metrics:
+            continue
+        agg['by_horizon'][h] = {
+            'MAE': float(np.mean([m['MAE'] for m in metrics])),
+            'MAPE': float(np.mean([m['MAPE'] for m in metrics])),
+            'SMAPE': float(np.mean([m['SMAPE'] for m in metrics]))
+        }
+
+    all_metrics = list(agg['by_horizon'].values())
+    if not all_metrics:
+        return None
+
+    agg['MAE'] = float(np.mean([m['MAE'] for m in all_metrics]))
+    agg['MAPE'] = float(np.mean([m['MAPE'] for m in all_metrics]))
+    agg['SMAPE'] = float(np.mean([m['SMAPE'] for m in all_metrics]))
+    return agg
+
+
 def _salva_forecast_completo(output_dir, confronto_df, backtest_metrics, best_model=None):
     """Crea un unico file Excel con tutti i forecast e il migliore evidenziato."""
     output_path = Path(output_dir) / 'forecast_tutti_modelli.xlsx'
@@ -1820,15 +1891,33 @@ def genera_forecast_modelli(df, output_dir, giorni_forecast=28, metodi=None, esc
     if backtest_metrics:
         risultati['backtest'] = backtest_metrics
 
+    ensemble_models = []
     if confronto is not None:
         available_models = [col for col in confronto.columns if col != 'DATA']
         if backtest_metrics:
             best_model = _scegli_miglior_modello(backtest_metrics, available_models)
+            ensemble_models = _seleziona_top_modelli(backtest_metrics, available_models, top_k=2)
+            if len(ensemble_models) >= 2:
+                confronto['ensemble_top2'] = confronto[ensemble_models].mean(axis=1)
+                available_models.append('ensemble_top2')
+                stati_modelli.append({
+                    'metodo': 'ensemble_top2',
+                    'successo': True,
+                    'dettaglio': f"Media dei migliori: {', '.join(ensemble_models)}"
+                })
+                if backtest_metrics:
+                    ensemble_metrics = _combina_metriche_ensemble(backtest_metrics, ensemble_models)
+                    if ensemble_metrics:
+                        backtest_metrics = dict(backtest_metrics)  # evita side-effects
+                        backtest_metrics['ensemble_top2'] = ensemble_metrics
         _salva_forecast_completo(output_dir, confronto, backtest_metrics, best_model)
 
     if best_model:
         risultati['miglior_modello'] = best_model
         print(f"\n   Miglior modello selezionato dal backtest: {best_model}")
+    if ensemble_models:
+        risultati['ensemble'] = ensemble_models
+        print(f"   Ensemble calcolato sui modelli: {', '.join(ensemble_models)}")
 
     return risultati
 

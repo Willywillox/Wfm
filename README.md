@@ -8,6 +8,7 @@ Repository con script di analisi e forecasting per il traffico call center.
 - `forecast_tutti_modelli.xlsx`: file generato a ogni run con il forecast combinato di **tutti** i modelli disponibili e la colonna `BEST_FORECAST`
   già impostata sul modello con MAPE più bassa dal backtest rolling multi-orizzonte. Include anche:
   - un foglio dedicato (`Best_<MODELLO>`) che riporta solo la curva del modello vincente e la sua metrica media (MAE/MAPE/SMAPE)
+  - un ensemble automatico `ensemble_top2` (media dei due modelli con MAPE più bassa sull’orizzonte più vicino a quello richiesto) già presente nel file, così puoi confrontare anche una combinazione robusta dei migliori
   - `Metriche_per_Orizzonte` con MAE/MAPE/SMAPE per ciascun orizzonte (14/30/60/90 gg o l’orizzonte richiesto)
   - `monitoraggio_metriche.txt` (plain-text) che registra a ogni run il modello migliore e le sue metriche, utile per capire se le performance stanno migliorando o peggiorando nel tempo.
 
@@ -45,3 +46,4 @@ resta comunque utile per confrontare visivamente tutte le curve.
 - **Intervalli di confidenza calibrati sui residui**: le bande LOW/HIGH sono ora basate sui quantili empirici dei residui (non più su una percentuale fissa), così riflettono la reale variabilità storica.
 - **Backtest multi-orizzonte**: le metriche rolling vengono calcolate su 14/30/60/90 giorni (oltre all’orizzonte richiesto). Il modello “migliore” viene scelto sul MAPE dell’orizzonte più vicino a quello chiesto, ma trovi tutte le metriche nel foglio `Metriche_per_Orizzonte`.
 - **Monitoraggio run-to-run**: `monitoraggio_metriche.txt` elenca timestamp, modello vincente e MAPE migliore per orizzonte, così puoi vedere se le performance stanno migliorando dopo ogni aggiornamento dati.
+- **Ensemble automatico**: quando almeno due modelli hanno metriche disponibili, viene creata la curva `ensemble_top2` come media dei migliori due (per MAPE sull’orizzonte più vicino). È utile se nessun modello singolo domina nettamente o se vuoi un forecast più stabile.
