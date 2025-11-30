@@ -5,3 +5,17 @@ Repository con script di analisi e forecasting per il traffico call center.
 - `analisi_trafficonewfct_profsari.py`: script principale di analisi e generazione forecast.
 - `FORECAST_REVIEW.md`: sintesi dei punti di forza e delle aree di miglioramento del flusso di forecast.
 - `requirements.txt`: dipendenze consigliate per eseguire lo script.
+
+## Come valutare il modello migliore dal backtest
+Lo script salva un file con le metriche di backtest (es. `valutazione_forecast.xlsx`) dove ogni riga rappresenta uno split rolling. Le colonne più utili sono:
+- `HW_MAE/RMSE/MAPE`: errori del modello Holt-Winters (baseline stagionale/di trend).
+- `Naive_*`: errore di un modello che riutilizza l’ultimo valore osservato.
+- `MA7_*`: errore di una media mobile a 7 giorni.
+
+Per scegliere rapidamente il forecast:
+1. Ordina le righe per `HW_MAPE`, `Naive_MAPE` e `MA7_MAPE` separatamente e confronta i valori medi: la MAPE più bassa indica il modello più accurato in percentuale.
+2. Se un modello ha MAPE significativamente più bassa e più stabile nelle varie righe, è il candidato principale. Nel campione riportato, Holt-Winters (`HW_*`) è sistematicamente più basso di `Naive_*` e `MA7_*`, quindi è il forecast consigliato.
+3. Se le MAPE sono simili, preferisci il modello più semplice (Holt-Winters o media mobile) per robustezza; prova TBATS/Prophet solo se servono stagionalità complesse o festività e hanno metriche competitive.
+4. Valuta anche MAE/RMSE per capire l’errore medio assoluto in unità di chiamate: valori più bassi significano previsioni più vicine ai dati reali.
+
+Questa lettura, insieme al riepilogo di stato dei modelli stampato in console, ti indica quale forecast usare per l’orizzonte richiesto.
