@@ -6,7 +6,8 @@ Repository con script di analisi e forecasting per il traffico call center.
 - `FORECAST_REVIEW.md`: sintesi dei punti di forza e delle aree di miglioramento del flusso di forecast.
 - `requirements.txt`: dipendenze consigliate per eseguire lo script.
 - `forecast_tutti_modelli.xlsx`: file generato a ogni run con il forecast combinato di **tutti** i modelli disponibili e la
-  colonna `BEST_FORECAST` già impostata sul modello con MAPE più bassa dal backtest rolling.
+  colonna `BEST_FORECAST` già impostata sul modello con MAPE più bassa dal backtest rolling. Include anche un foglio dedicato
+  (`Best_<MODELLO>`) che riporta solo la curva del modello vincente e la sua metrica media (MAE/MAPE/SMAPE) in sintesi.
 
 ## Come valutare il modello migliore dal backtest
 Lo script salva un file con le metriche di backtest (es. `valutazione_forecast.xlsx`) dove ogni riga rappresenta uno split rolling. Le colonne più utili sono:
@@ -27,8 +28,9 @@ Oltre ai singoli file per metodo e al confronto `forecast_confronto_modelli.xlsx
 con:
 - **Foglio `Forecast_Tutti_Modelli`**: tutte le curve forecast di ogni modello riuscito, più la colonna `BEST_FORECAST` che
   replica il modello con MAPE più bassa nel backtest rolling (se le metriche sono state calcolate).
+- **Foglio `Best_<MODELLO>`**: solo la curva del modello vincente (MAPE più bassa) per copiarla rapidamente in altri fogli.
 - **Foglio `Metriche_Backtest`**: tabella MAE/MAPE/SMAPE per ciascun modello valutato.
-- **Foglio `Sintesi`**: riepilogo del modello migliore e dell’elenco di modelli valutati.
+- **Foglio `Sintesi`**: riepilogo del modello migliore, le sue metriche medie e l’elenco di modelli valutati.
 
 Se il backtest non è stato eseguito (dati o dipendenze insufficienti), la colonna `BEST_FORECAST` non viene popolata e il file
 resta comunque utile per confrontare visivamente tutte le curve.

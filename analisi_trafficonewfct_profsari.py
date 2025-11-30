@@ -1601,11 +1601,20 @@ def _salva_forecast_completo(output_dir, confronto_df, backtest_metrics, best_mo
     output_path = Path(output_dir) / 'forecast_tutti_modelli.xlsx'
 
     confronto_export = confronto_df.copy()
+    best_sheet = None
+    best_metrics = None
+
     if best_model and best_model in confronto_export.columns:
         confronto_export['BEST_FORECAST'] = confronto_export[best_model]
+        best_sheet = confronto_export[['DATA', 'BEST_FORECAST']].rename(columns={'BEST_FORECAST': best_model})
+        if backtest_metrics and best_model in backtest_metrics:
+            best_metrics = backtest_metrics[best_model]
 
     with safe_excel_writer(output_path, engine='openpyxl') as (writer, actual_path):
         confronto_export.to_excel(writer, sheet_name='Forecast_Tutti_Modelli', index=False)
+
+        if best_sheet is not None:
+            best_sheet.to_excel(writer, sheet_name=f'Best_{best_model.upper()}', index=False)
 
         if backtest_metrics:
             metrics_df = pd.DataFrame(backtest_metrics).T
@@ -1616,6 +1625,11 @@ def _salva_forecast_completo(output_dir, confronto_df, backtest_metrics, best_mo
         summary_rows = []
         if best_model:
             summary_rows.append({'chiave': 'Miglior modello', 'valore': best_model})
+            if best_metrics:
+                summary_rows.append({'chiave': 'Metriche modello migliore',
+                                      'valore': f"MAE={best_metrics.get('MAE'):.2f}, "
+                                                f"MAPE={best_metrics.get('MAPE'):.2f}%, "
+                                                f"SMAPE={best_metrics.get('SMAPE'):.2f}%"})
         if backtest_metrics:
             summary_rows.append({'chiave': 'Modelli valutati', 'valore': ', '.join(sorted(backtest_metrics.keys()))})
         if summary_rows:
