@@ -37,8 +37,8 @@ AUTORE: Analisi WFM Call Center
 VERSIONE: 2.0 Enhanced (con multiple stagionalità)
 """
 
-SCRIPT_VERSION = "2.2.0"
-LAST_UPDATE = "2025-11-22"
+SCRIPT_VERSION = "2.3.0"
+LAST_UPDATE = "2025-11-23"
 
 import matplotlib
 matplotlib.use("Agg")
@@ -63,6 +63,13 @@ warnings.filterwarnings('ignore')
 
 # Parametri globali per IC basate su quantili dei residui
 DEFAULT_ALPHA = 0.10  # 80% central interval by default
+
+HOLIDAY_FLAGS = [
+    'Capodanno', 'Epifania', 'Festa_Liberazione', 'Festa_Lavoro',
+    'Festa_Repubblica', 'Ferragosto', 'Ognissanti', 'Immacolata',
+    'Natale', 'Santo_Stefano', 'Capodanno_Vigilia', 'Pasqua',
+    'Venerdi_Santo', 'PostPasqua', 'Periodo_Natalizio', 'Post_Capodanno'
+]
 
 VERBOSE = os.environ.get("FORECAST_VERBOSE", "0").lower() not in ("0", "false", "no", "")
 
@@ -113,6 +120,15 @@ def _interval_from_residuals(residuals, forecast_values, alpha=DEFAULT_ALPHA):
         upper = forecast_values + delta
 
     return np.clip(lower, a_min=0, a_max=None), np.clip(upper, a_min=0, a_max=None)
+
+
+def _fmt(val):
+    if val is None or (isinstance(val, float) and np.isnan(val)):
+        return "-"
+    try:
+        return f"{float(val):.2f}"
+    except Exception:
+        return str(val)
 
 
 # Verifica librerie opzionali
@@ -1740,6 +1756,17 @@ def _salva_forecast_completo(output_dir, confronto_df, backtest_metrics, best_mo
     with safe_excel_writer(output_path, engine='openpyxl') as (writer, actual_path):
         confronto_export.to_excel(writer, sheet_name='Forecast_Tutti_Modelli', index=False)
 
+        # Aggregazioni per confronto rapido
+        confronto_export['DATA'] = pd.to_datetime(confronto_export['DATA'])
+        confronto_export = confronto_export.sort_values('DATA')
+        confronto_export.set_index('DATA', inplace=True)
+        weekly = confronto_export.resample('W-MON').sum(numeric_only=True).reset_index().rename(columns={'DATA': 'SETTIMANA'})
+        monthly = confronto_export.resample('MS').sum(numeric_only=True).reset_index().rename(columns={'DATA': 'MESE'})
+        confronto_export.reset_index(inplace=True)
+
+        weekly.to_excel(writer, sheet_name='Confronto_Settimanale', index=False)
+        monthly.to_excel(writer, sheet_name='Confronto_Mensile', index=False)
+
         if best_sheet is not None:
             best_sheet.to_excel(writer, sheet_name=f'Best_{best_model.upper()}', index=False)
 
@@ -1777,6 +1804,18 @@ def _salva_forecast_completo(output_dir, confronto_df, backtest_metrics, best_mo
             summary_rows.append({'chiave': 'Modelli valutati', 'valore': ', '.join(sorted(backtest_metrics.keys()))})
         if summary_rows:
             pd.DataFrame(summary_rows).to_excel(writer, sheet_name='Sintesi', index=False)
+
+        guida_rows = [
+            {'Modello': 'holtwinters', 'Uso consigliato': 'Pattern giornaliero regolare, stagionalità settimanale', 'Note': 'Veloce e robusto, richiede statsmodels'},
+            {'Modello': 'pattern', 'Uso consigliato': 'Ripetizione media dei pattern storici', 'Note': 'Semplice baseline basata su stagionalità media'},
+            {'Modello': 'naive', 'Uso consigliato': 'Baseline di controllo', 'Note': 'Replica l’ultimo valore o media breve periodo'},
+            {'Modello': 'sarima', 'Uso consigliato': 'Trend + stagionalità con correlazione autoregressiva', 'Note': 'Più lento, utile con dati stabili e lunghi'},
+            {'Modello': 'prophet', 'Uso consigliato': 'Più stagionalità + festività personalizzate', 'Note': 'Gestisce cambi policy con festivi esclusi'},
+            {'Modello': 'tbats', 'Uso consigliato': 'Multiple stagionalità complesse', 'Note': 'Richiede tbats installato, può essere lento'},
+            {'Modello': 'intraday_dinamico', 'Uso consigliato': 'Distribuzione per fascia oraria', 'Note': 'Allena 24 modelli, utile per staffing'},
+            {'Modello': 'ensemble_top2', 'Uso consigliato': 'Media dei migliori due modelli', 'Note': 'Riduce varianza, richiede almeno due modelli riusciti'},
+        ]
+        pd.DataFrame(guida_rows).to_excel(writer, sheet_name='Guida_Modelli', index=False)
 
     print(f"   File completo modelli salvato: {actual_path.name}")
 
@@ -1928,6 +1967,9 @@ def genera_forecast_modelli(df, output_dir, giorni_forecast=28, metodi=None, esc
                         backtest_metrics = dict(backtest_metrics)  # evita side-effects
                         backtest_metrics['ensemble_top2'] = ensemble_metrics
         _salva_forecast_completo(output_dir, confronto, backtest_metrics, best_model)
+
+    if confronto is not None:
+        risultati['confronto_df'] = confronto.copy()
 
     if best_model:
         risultati['miglior_modello'] = best_model
@@ -2299,7 +2341,7 @@ def genera_report_finale(df, kpi, forecast_giornaliero_df, output_dir):
 # PROCESSING SINGOLO FILE
 # =============================================================================
 
-def processa_singolo_file(file_path, output_dir, giorni_forecast=28, escludi_festivita=None):
+def processa_singolo_file(file_path, output_dir, giorni_forecast=28, escludi_festivita=None, metodi=None):
     """
     Elabora un singolo file Excel e genera tutti gli output.
 
@@ -2362,7 +2404,7 @@ def processa_singolo_file(file_path, output_dir, giorni_forecast=28, escludi_fes
             df,
             output_dir,
             giorni_forecast=giorni_forecast,
-            metodi=('holtwinters', 'pattern', 'naive', 'sarima', 'prophet', 'tbats', 'intraday_dinamico'),
+            metodi=metodi,
             escludi_festivita=escludi_festivita
         )
         forecast_completo = forecast_modelli.get('holtwinters')
@@ -2411,7 +2453,7 @@ def processa_singolo_file(file_path, output_dir, giorni_forecast=28, escludi_fes
 # MAIN - BATCH PROCESSING
 # =============================================================================
 
-def main(giorni_forecast=28, escludi_festivita=None, input_dirs=None):
+def main(giorni_forecast=28, escludi_festivita=None, input_dirs=None, metodi=None):
     """
     Elabora tutti i file Excel trovati nella cartella dello script.
     Per ogni file crea una cartella output separata.
@@ -2452,7 +2494,7 @@ def main(giorni_forecast=28, escludi_festivita=None, input_dirs=None):
         output_dir = os.path.join(script_dir, 'output', file_stem)
 
         # Processa il file
-        risultato = processa_singolo_file(file_path, output_dir, giorni_forecast, escludi_festivita)
+        risultato = processa_singolo_file(file_path, output_dir, giorni_forecast, escludi_festivita, metodi)
         risultati.append(risultato)
 
     # Genera report riassuntivo finale
@@ -2559,6 +2601,13 @@ class ForecastGUI:
         self.holidays_var = tk.StringVar(value="")
         self.best_model_var = tk.StringVar(value="N/D")
 
+        self.model_vars = {m: tk.BooleanVar(value=True) for m in (
+            'holtwinters', 'pattern', 'naive', 'sarima', 'prophet', 'tbats', 'intraday_dinamico'
+        )}
+        self.holiday_flags_vars = {h: tk.BooleanVar(value=False) for h in HOLIDAY_FLAGS}
+        self.confronto_df = None
+        self.backtest_metrics = None
+
         self.run_button = None
         self.results_box = None
         self.log_widget = None
@@ -2568,6 +2617,9 @@ class ForecastGUI:
         self.image_caption = None
         self.current_image = None
         self.last_output_dirs = []
+        self.compare_tree = None
+        self.metric_tree = None
+        self.period_var = tk.StringVar(value='giorno')
 
         self._build_layout()
 
@@ -2589,11 +2641,27 @@ class ForecastGUI:
         ttk.Label(form_frame, text="Festività da escludere (virgola):").grid(row=2, column=0, sticky="w")
         ttk.Entry(form_frame, textvariable=self.holidays_var, width=60).grid(row=2, column=1, columnspan=2, sticky="we", pady=2)
 
-        self.run_button = ttk.Button(form_frame, text="Esegui forecast", command=self.run_analysis)
-        self.run_button.grid(row=3, column=0, pady=8, sticky="w")
+        flags_frame = ttk.Frame(form_frame)
+        flags_frame.grid(row=3, column=0, columnspan=3, sticky="we", pady=2)
+        ttk.Label(flags_frame, text="Flag rapidi festività da escludere:").grid(row=0, column=0, sticky="w")
+        for idx, holiday in enumerate(HOLIDAY_FLAGS):
+            r = idx // 4 + 1
+            c = idx % 4
+            ttk.Checkbutton(flags_frame, text=holiday, variable=self.holiday_flags_vars[holiday]).grid(row=r, column=c, sticky="w")
 
-        ttk.Label(form_frame, text="Miglior modello rilevato:").grid(row=3, column=1, sticky="e")
-        ttk.Label(form_frame, textvariable=self.best_model_var, font=("Helvetica", 10, "bold"), foreground="#2c7a7b").grid(row=3, column=2, sticky="w")
+        models_frame = ttk.Frame(form_frame)
+        models_frame.grid(row=4, column=0, columnspan=3, sticky="we", pady=4)
+        ttk.Label(models_frame, text="Seleziona i modelli da eseguire:").grid(row=0, column=0, sticky="w")
+        for idx, modello in enumerate(self.model_vars.keys()):
+            r = idx // 4 + 1
+            c = idx % 4
+            ttk.Checkbutton(models_frame, text=modello, variable=self.model_vars[modello]).grid(row=r, column=c, sticky="w")
+
+        self.run_button = ttk.Button(form_frame, text="Esegui forecast", command=self.run_analysis)
+        self.run_button.grid(row=5, column=0, pady=8, sticky="w")
+
+        ttk.Label(form_frame, text="Miglior modello rilevato:").grid(row=5, column=1, sticky="e")
+        ttk.Label(form_frame, textvariable=self.best_model_var, font=("Helvetica", 10, "bold"), foreground="#2c7a7b").grid(row=5, column=2, sticky="w")
 
         form_frame.columnconfigure(1, weight=1)
 
@@ -2602,20 +2670,58 @@ class ForecastGUI:
         self.results_box = tk.Listbox(results_frame, height=6)
         self.results_box.pack(fill="x", expand=True)
 
-        plots_frame = ttk.LabelFrame(self.root, text="Grafici generati", padding=10)
-        plots_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        notebook = ttk.Notebook(self.root)
+        notebook.pack(fill="both", expand=True, padx=10, pady=5)
 
-        combo_frame = ttk.Frame(plots_frame)
+        tab_plots = ttk.Frame(notebook)
+        tab_compare = ttk.Frame(notebook)
+        tab_guide = ttk.Frame(notebook)
+        notebook.add(tab_plots, text="Grafici")
+        notebook.add(tab_compare, text="Confronti & Affidabilità")
+        notebook.add(tab_guide, text="Guida modelli")
+
+        combo_frame = ttk.Frame(tab_plots, padding=10)
         combo_frame.pack(fill="x")
         ttk.Label(combo_frame, text="Seleziona grafico PNG dall'ultimo output:").pack(side="left")
         self.plot_combo = ttk.Combobox(combo_frame, textvariable=self.plot_var, width=70, state="readonly")
         self.plot_combo.pack(side="left", padx=5, fill="x", expand=True)
         ttk.Button(combo_frame, text="Mostra", command=self.show_plot).pack(side="left")
 
-        self.image_label = ttk.Label(plots_frame)
+        self.image_label = ttk.Label(tab_plots)
         self.image_label.pack(pady=6)
-        self.image_caption = ttk.Label(plots_frame, font=("Helvetica", 9, "italic"))
+        self.image_caption = ttk.Label(tab_plots, font=("Helvetica", 9, "italic"))
         self.image_caption.pack()
+
+        compare_controls = ttk.Frame(tab_compare, padding=10)
+        compare_controls.pack(fill="x")
+        ttk.Label(compare_controls, text="Granularità confronto:").pack(side="left")
+        ttk.Combobox(compare_controls, textvariable=self.period_var, values=['giorno', 'settimana', 'mese'], state='readonly', width=12, justify='center').pack(side="left", padx=5)
+        ttk.Button(compare_controls, text="Aggiorna confronto", command=self.refresh_comparisons).pack(side="left")
+
+        self.compare_tree = ttk.Treeview(tab_compare, columns=("periodo", "modello", "forecast", "mape"), show='headings', height=10)
+        for col, lbl in zip(self.compare_tree['columns'], ["Periodo", "Modello", "Forecast", "MAPE (%)"]):
+            self.compare_tree.heading(col, text=lbl)
+        self.compare_tree.pack(fill="both", expand=True, padx=10, pady=4)
+
+        ttk.Label(tab_compare, text="Indici di affidabilità (backtest)", font=("Helvetica", 10, "bold")).pack(pady=(6, 0))
+        self.metric_tree = ttk.Treeview(tab_compare, columns=("modello", "mae", "mape", "smape"), show='headings', height=6)
+        for col, lbl in zip(self.metric_tree['columns'], ["Modello", "MAE", "MAPE", "SMAPE"]):
+            self.metric_tree.heading(col, text=lbl)
+        self.metric_tree.pack(fill="both", expand=True, padx=10, pady=4)
+
+        guide_text = ScrolledText(tab_guide, wrap=tk.WORD, height=20)
+        guide_text.pack(fill="both", expand=True, padx=10, pady=10)
+        guide_text.insert(tk.END, """Guida rapida ai modelli disponibili:\n\n"
+                                 "- holtwinters: stagionalità settimanale, veloce e robusto.\n"
+                                 "- pattern: media delle stagionalità storiche, baseline semplice.\n"
+                                 "- naive: replica l'ultimo valore o media breve periodo, controllo qualità.\n"
+                                 "- sarima: trend + stagionalità con correlazione autoregressiva.\n"
+                                 "- prophet: stagionalità multiple e festività personalizzabili.\n"
+                                 "- tbats: multiple stagionalità complesse (richiede tbats).\n"
+                                 "- intraday_dinamico: distribuzione per fascia oraria, utile per staffing.\n"
+                                 "- ensemble_top2: media dei due modelli con MAPE più bassa.\n\n"
+                                 "Suggerimento: scegli i modelli dal pannello iniziale, escludi le festività non più valide e confronta le curve per giorno/settimana/mese insieme agli indici di affidabilità.""")
+        guide_text.configure(state='disabled')
 
         log_frame = ttk.LabelFrame(self.root, text="Log esecuzione", padding=10)
         log_frame.pack(fill="both", expand=True, padx=10, pady=5)
@@ -2635,6 +2741,12 @@ class ForecastGUI:
             return
 
         holidays_list = [h.strip() for h in self.holidays_var.get().split(',') if h.strip()]
+        holidays_list.extend([h for h, var in self.holiday_flags_vars.items() if var.get()])
+        holidays_list = sorted(set(holidays_list))
+        selected_models = [m for m, var in self.model_vars.items() if var.get()]
+        if not selected_models:
+            messagebox.showerror("Nessun modello selezionato", "Seleziona almeno un modello da eseguire.")
+            return
         input_root = self.input_dir_var.get()
 
         self.run_button.config(state="disabled")
@@ -2644,12 +2756,12 @@ class ForecastGUI:
 
         thread = threading.Thread(
             target=self._run_batch,
-            args=(giorni, holidays_list, input_root),
+            args=(giorni, holidays_list, input_root, selected_models),
             daemon=True,
         )
         thread.start()
 
-    def _run_batch(self, giorni, holidays, input_root):
+    def _run_batch(self, giorni, holidays, input_root, modelli):
         buffer = io.StringIO()
         input_dirs = [input_root]
         nested = os.path.join(input_root, "file input")
@@ -2659,7 +2771,12 @@ class ForecastGUI:
         risultati = []
         try:
             with redirect_stdout(buffer), redirect_stderr(buffer):
-                risultati = main(giorni_forecast=giorni, escludi_festivita=holidays or None, input_dirs=input_dirs)
+                risultati = main(
+                    giorni_forecast=giorni,
+                    escludi_festivita=holidays or None,
+                    input_dirs=input_dirs,
+                    metodi=modelli
+                )
         except Exception as exc:
             buffer.write(f"\n❌ Errore GUI: {exc}\n")
 
@@ -2674,6 +2791,8 @@ class ForecastGUI:
         self.results_box.delete(0, tk.END)
         best_models = []
         self.last_output_dirs = []
+        self.confronto_df = None
+        self.backtest_metrics = None
 
         for r in risultati:
             status = "✅" if r.get('success') else "❌"
@@ -2683,6 +2802,12 @@ class ForecastGUI:
             self.results_box.insert(tk.END, line)
             if r.get('success'):
                 self.last_output_dirs.append(r.get('output_dir'))
+                if self.confronto_df is None and r.get('forecast_modelli', {}):
+                    self.backtest_metrics = r['forecast_modelli'].get('backtest')
+                if self.confronto_df is None and r.get('forecast_modelli', {}).get('confronto_df'):
+                    self.confronto_df = r['forecast_modelli']['confronto_df']
+                elif self.confronto_df is None and r.get('confronto_df') is not None:
+                    self.confronto_df = r.get('confronto_df')
             if r.get('miglior_modello'):
                 best_models.append(r['miglior_modello'])
 
@@ -2692,6 +2817,7 @@ class ForecastGUI:
             self.best_model_var.set("N/D")
 
         self.refresh_plots()
+        self.refresh_comparisons()
 
     def refresh_plots(self):
         pngs = []
@@ -2707,6 +2833,66 @@ class ForecastGUI:
             self.plot_var.set("")
             self.image_label.configure(image="")
             self.image_caption.configure(text="")
+
+    def refresh_comparisons(self):
+        if self.confronto_df is None:
+            return
+        period = self.period_var.get()
+        df = self.confronto_df.copy()
+        df['DATA'] = pd.to_datetime(df['DATA'])
+        df = df.sort_values('DATA').set_index('DATA')
+
+        if period == 'settimana':
+            df = df.resample('W-MON').sum(numeric_only=True).reset_index().rename(columns={'DATA': 'PERIODO'})
+            df['PERIODO'] = df['PERIODO'].dt.strftime('%Y-%m-%d (set)')
+        elif period == 'mese':
+            df = df.resample('MS').sum(numeric_only=True).reset_index().rename(columns={'DATA': 'PERIODO'})
+            df['PERIODO'] = df['PERIODO'].dt.strftime('%Y-%m (mese)')
+        else:
+            df = df.reset_index().rename(columns={'DATA': 'PERIODO'})
+            df['PERIODO'] = df['PERIODO'].dt.strftime('%Y-%m-%d')
+
+        long_df = df.melt(id_vars=['PERIODO'], var_name='modello', value_name='forecast')
+        reliability = self._reliability_map()
+
+        for item in self.compare_tree.get_children():
+            self.compare_tree.delete(item)
+        for _, row in long_df.iterrows():
+            mape_val = reliability.get(row['modello'])
+            mape_str = f"{mape_val:.2f}" if mape_val is not None else "-"
+            self.compare_tree.insert('', 'end', values=(row['PERIODO'], row['modello'], f"{row['forecast']:.1f}", mape_str))
+
+        self._refresh_metric_tree()
+
+    def _reliability_map(self):
+        if not self.backtest_metrics:
+            return {}
+        mapping = {}
+        for modello, vals in self.backtest_metrics.items():
+            if 'MAPE' in vals and vals['MAPE'] is not None:
+                mapping[modello] = vals['MAPE']
+                continue
+            horizons = vals.get('by_horizon', {})
+            if horizons:
+                best_h = min(horizons, key=lambda h: horizons[h].get('MAPE', np.inf))
+                mapping[modello] = horizons[best_h].get('MAPE')
+        return mapping
+
+    def _refresh_metric_tree(self):
+        for item in self.metric_tree.get_children():
+            self.metric_tree.delete(item)
+        if not self.backtest_metrics:
+            return
+        for modello, vals in sorted(self.backtest_metrics.items()):
+            mae = vals.get('MAE') or (min(vals.get('by_horizon', {}), key=lambda h: vals['by_horizon'][h].get('MAE', np.inf)) if vals.get('by_horizon') else None)
+            mape = vals.get('MAPE') or (min(vals.get('by_horizon', {}), key=lambda h: vals['by_horizon'][h].get('MAPE', np.inf)) if vals.get('by_horizon') else None)
+            smape = vals.get('SMAPE') or (min(vals.get('by_horizon', {}), key=lambda h: vals['by_horizon'][h].get('SMAPE', np.inf)) if vals.get('by_horizon') else None)
+            def _extract(val, key):
+                return vals['by_horizon'][val].get(key) if isinstance(val, (int, float)) else None
+            mae_val = vals.get('MAE') if vals.get('MAE') is not None else _extract(mae, 'MAE')
+            mape_val = vals.get('MAPE') if vals.get('MAPE') is not None else _extract(mape, 'MAPE')
+            smape_val = vals.get('SMAPE') if vals.get('SMAPE') is not None else _extract(smape, 'SMAPE')
+            self.metric_tree.insert('', 'end', values=(modello, _fmt(mae_val), _fmt(mape_val), _fmt(smape_val)))
 
     def show_plot(self):
         path = self.plot_var.get()
@@ -2796,6 +2982,15 @@ if __name__ == "__main__":
     # 'Venerdi_Santo', 'PostPasqua', 'Periodo_Natalizio', 'Post_Capodanno'
     # E tutti i pre-festivi/post-festivi (es. 'Natale_PreFestivo')
     # =========================================================================
+
+    # Se vuoi selezionare solo alcuni modelli da CLI (oltre alla GUI):
+    # Imposta la variabile d'ambiente FORECAST_MODELLI, es.:
+    #   FORECAST_MODELLI=holtwinters,prophet,tbats
+    # Se non impostata, verranno eseguiti tutti i modelli disponibili.
+    env_modelli = os.environ.get("FORECAST_MODELLI")
+    METODI_DA_ESEGUIRE = None
+    if env_modelli:
+        METODI_DA_ESEGUIRE = [m.strip() for m in env_modelli.split(',') if m.strip()]
     
     print(f"\n>>> FORECAST CONFIGURATO: {GIORNI_FORECAST} GIORNI <<<")
     print(f"    Equivalente a: {GIORNI_FORECAST/7:.1f} settimane")
@@ -2806,7 +3001,11 @@ if __name__ == "__main__":
     print(f"Avvio batch processing con forecast per {GIORNI_FORECAST} giorni...\n")
     if ESCLUDI_FESTIVITA:
         print(f"⚠️  Festività escluse da Prophet: {', '.join(ESCLUDI_FESTIVITA)}\n")
-    risultati = main(giorni_forecast=GIORNI_FORECAST, escludi_festivita=ESCLUDI_FESTIVITA)
+    risultati = main(
+        giorni_forecast=GIORNI_FORECAST,
+        escludi_festivita=ESCLUDI_FESTIVITA,
+        metodi=METODI_DA_ESEGUIRE
+    )
     
     print("\n" + "=" * 80)
     print("ANALISI COMPLETATA CON SUCCESSO!")

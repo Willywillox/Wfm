@@ -10,6 +10,8 @@ Repository con script di analisi e forecasting per il traffico call center.
   - un foglio dedicato (`Best_<MODELLO>`) che riporta solo la curva del modello vincente e la sua metrica media (MAE/MAPE/SMAPE)
   - un ensemble automatico `ensemble_top2` (media dei due modelli con MAPE più bassa sull’orizzonte più vicino a quello richiesto) già presente nel file, così puoi confrontare anche una combinazione robusta dei migliori
   - `Metriche_per_Orizzonte` con MAE/MAPE/SMAPE per ciascun orizzonte (14/30/60/90 gg o l’orizzonte richiesto)
+  - `Confronto_Settimanale` e `Confronto_Mensile` per confrontare subito le curve aggregate a settimana e a mese
+  - `Guida_Modelli` con una tabella d’uso rapido dei modelli disponibili
   - `monitoraggio_metriche.txt` (plain-text) che registra a ogni run il modello migliore e le sue metriche, utile per capire se le performance stanno migliorando o peggiorando nel tempo.
 
 ## Modalità GUI (interfaccia grafica)
@@ -20,11 +22,13 @@ Per lanciare le analisi senza modificare il codice ed esplorare i grafici:
    python analisi_trafficonewfct_profsari.py --gui
    ```
 2. Seleziona la cartella con gli Excel (la GUI cerca anche nella sottocartella `file input`).
-3. Imposta i giorni di forecast e, se serve, le festività da escludere (separate da virgola).
+3. Imposta i giorni di forecast, seleziona i modelli da eseguire e le festività da escludere (flag rapidi o lista separata da virgola).
 4. Clicca "Esegui forecast":
    - i log della run appaiono nel riquadro in basso
    - la lista dei file processati mostra stato e modello vincente
-   - il menu a discesa "Grafici generati" si popola con i PNG dell’ultimo output, che puoi visualizzare direttamente nella GUI
+   - il tab **Grafici** si popola con i PNG dell’ultimo output, che puoi visualizzare direttamente nella GUI
+   - il tab **Confronti & Affidabilità** mostra le curve aggregate per giorno/settimana/mese e gli indici MAE/MAPE/SMAPE dei modelli eseguiti
+   - il tab **Guida modelli** riassume quando usare ciascun modello
 
 Per usare la GUI anche da ambienti orchestrati, imposta la variabile d’ambiente `FORECAST_GUI=1` invece del flag `--gui`.
 
