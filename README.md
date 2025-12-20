@@ -24,7 +24,7 @@ Per lanciare le analisi senza modificare il codice ed esplorare i grafici:
 2. Seleziona la cartella con gli Excel (la GUI cerca anche nella sottocartella `file input`).
 3. Imposta i giorni di forecast, seleziona i modelli da eseguire e le festività da escludere (flag rapidi o lista separata da virgola).
 4. Clicca "Esegui forecast":
-   - i log della run appaiono **in tempo reale** nel riquadro in basso, così vedi quali modelli stanno girando e se l'elaborazione è ancora attiva
+   - i log della run appaiono **in tempo reale** nel riquadro in basso (sia i `print` sia i messaggi `logging` delle librerie come Prophet/TBATS), così vedi quali modelli stanno girando e se l'elaborazione è ancora attiva
    - se nessun messaggio arriva per qualche secondo, la GUI mostra "⏳ Elaborazione in corso..." per confermare che il batch sta ancora lavorando
    - la lista dei file processati mostra stato e modello vincente
    - il tab **Grafici** si popola con i PNG dell’ultimo output, che puoi visualizzare direttamente nella GUI

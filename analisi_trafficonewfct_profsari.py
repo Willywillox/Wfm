@@ -2635,6 +2635,24 @@ class _GuiLogWriter:
             self.buffer.flush()
 
 
+class _QueueLogHandler(logging.Handler):
+    """Handler logging che inoltra i messaggi alla coda della GUI."""
+
+    def __init__(self, queue_obj):
+        super().__init__()
+        self.queue = queue_obj
+
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            if not msg.endswith("\n"):
+                msg += "\n"
+            self.queue.put_nowait(msg)
+        except Exception:
+            # Non bloccare l'esecuzione della GUI in caso di problemi con la coda
+            pass
+
+
 class ForecastGUI:
     """Interfaccia grafica minimale per lanciare il forecast e visualizzare output."""
 
@@ -2898,6 +2916,17 @@ class ForecastGUI:
     def _run_batch(self, giorni, holidays, input_root, modelli):
         buffer = io.StringIO()
         log_writer = _GuiLogWriter(self.log_queue, buffer)
+        queue_handler = _QueueLogHandler(self.log_queue)
+        queue_handler.setFormatter(logging.Formatter("%(message)s"))
+        root_logger = logging.getLogger()
+        old_level = root_logger.level
+        root_handlers = list(root_logger.handlers)
+        if not root_handlers:
+            logging.basicConfig(level=logging.INFO)
+        root_logger.addHandler(queue_handler)
+        if old_level > logging.INFO:
+            root_logger.setLevel(logging.INFO)
+
         input_dirs = [input_root]
         nested = os.path.join(input_root, "file input")
         if os.path.isdir(nested):
@@ -2906,14 +2935,27 @@ class ForecastGUI:
         risultati = []
         try:
             with redirect_stdout(log_writer), redirect_stderr(log_writer):
+                log_writer.write("\n>>> Avvio batch forecast dalla GUI...\n")
+                log_writer.write(f"Cartelle input: {', '.join(input_dirs)}\n")
+                log_writer.write(f"Modelli attivi: {', '.join(modelli)}\n")
+                if holidays:
+                    log_writer.write(f"Festività escluse: {', '.join(holidays)}\n")
                 risultati = main(
                     giorni_forecast=giorni,
                     escludi_festivita=holidays or None,
                     input_dirs=input_dirs,
                     metodi=modelli
                 )
+                log_writer.write("\n>>> Elaborazione completata, preparo il riepilogo...\n")
         except Exception as exc:
             log_writer.write(f"\n❌ Errore GUI: {exc}\n")
+        finally:
+            try:
+                root_logger.removeHandler(queue_handler)
+            except Exception:
+                pass
+            queue_handler.close()
+            root_logger.setLevel(old_level)
 
         output_text = buffer.getvalue()
         self.root.after(0, lambda: self._on_run_complete(risultati, output_text))
