@@ -27,7 +27,8 @@ Per lanciare le analisi senza modificare il codice ed esplorare i grafici:
    - i log della run appaiono nel riquadro in basso
    - la lista dei file processati mostra stato e modello vincente
    - il tab **Grafici** si popola con i PNG dell’ultimo output, che puoi visualizzare direttamente nella GUI
-   - il tab **Confronti & Affidabilità** mostra le curve aggregate per giorno/settimana/mese e gli indici MAE/MAPE/SMAPE dei modelli eseguiti
+   - il tab **Confronti & Affidabilità** mostra le curve aggregate per giorno/settimana/mese e gli indici MAE/MAPE/SMAPE dei modelli eseguiti (anche per orizzonte)
+   - il tab **File & Metriche** elenca gli output generati (xlsx/txt) e li apre con doppio click, insieme al riepilogo del modello migliore rilevato dal backtest
    - il tab **Guida modelli** riassume quando usare ciascun modello
 
 Per usare la GUI anche da ambienti orchestrati, imposta la variabile d’ambiente `FORECAST_GUI=1` invece del flag `--gui`.

@@ -53,6 +53,7 @@ from datetime import datetime, timedelta
 from contextlib import contextmanager, redirect_stdout, redirect_stderr
 import os
 import glob
+import subprocess
 from pathlib import Path
 import warnings
 import tempfile
@@ -2619,6 +2620,10 @@ class ForecastGUI:
         self.last_output_dirs = []
         self.compare_tree = None
         self.metric_tree = None
+        self.metric_horizon_tree = None
+        self.best_detail_var = tk.StringVar(value="N/D")
+        self.output_tree = None
+        self.output_files = []
         self.period_var = tk.StringVar(value='giorno')
 
         self._build_layout()
@@ -2675,9 +2680,11 @@ class ForecastGUI:
 
         tab_plots = ttk.Frame(notebook)
         tab_compare = ttk.Frame(notebook)
+        tab_output = ttk.Frame(notebook)
         tab_guide = ttk.Frame(notebook)
         notebook.add(tab_plots, text="Grafici")
         notebook.add(tab_compare, text="Confronti & Affidabilità")
+        notebook.add(tab_output, text="File & Metriche")
         notebook.add(tab_guide, text="Guida modelli")
 
         combo_frame = ttk.Frame(tab_plots, padding=10)
@@ -2709,6 +2716,14 @@ class ForecastGUI:
             self.metric_tree.heading(col, text=lbl)
         self.metric_tree.pack(fill="both", expand=True, padx=10, pady=4)
 
+        ttk.Label(tab_compare, text="Metriche per orizzonte (MAPE/MAE/SMAPE)", font=("Helvetica", 10, "bold")).pack(pady=(6, 0))
+        self.metric_horizon_tree = ttk.Treeview(tab_compare, columns=("modello", "horizon", "mae", "mape", "smape"), show='headings', height=7)
+        for col, lbl in zip(self.metric_horizon_tree['columns'], ["Modello", "Orizzonte", "MAE", "MAPE", "SMAPE"]):
+            self.metric_horizon_tree.heading(col, text=lbl)
+        self.metric_horizon_tree.pack(fill="both", expand=True, padx=10, pady=4)
+
+        ttk.Label(tab_compare, textvariable=self.best_detail_var, font=("Helvetica", 10, "italic"), foreground="#2c5282").pack(pady=(2, 8))
+
         guide_text = ScrolledText(tab_guide, wrap=tk.WORD, height=20)
         guide_text.pack(fill="both", expand=True, padx=10, pady=10)
         guide_text.insert(tk.END, """Guida rapida ai modelli disponibili:\n\n"
@@ -2722,6 +2737,16 @@ class ForecastGUI:
                                  "- ensemble_top2: media dei due modelli con MAPE più bassa.\n\n"
                                  "Suggerimento: scegli i modelli dal pannello iniziale, escludi le festività non più valide e confronta le curve per giorno/settimana/mese insieme agli indici di affidabilità.""")
         guide_text.configure(state='disabled')
+
+        output_intro = ttk.Label(tab_output, text="File principali generati (doppio click per aprire)", font=("Helvetica", 10, "bold"))
+        output_intro.pack(pady=(8, 4))
+        self.output_tree = ttk.Treeview(tab_output, columns=("nome", "tipo", "path"), show='headings', height=12)
+        for col, lbl, width in zip(self.output_tree['columns'], ["File", "Tipo", "Percorso"], [200, 100, 400]):
+            self.output_tree.heading(col, text=lbl)
+            self.output_tree.column(col, width=width, anchor='w')
+        self.output_tree.pack(fill="both", expand=True, padx=10, pady=4)
+        self.output_tree.bind('<Double-1>', self._open_selected_output)
+        ttk.Button(tab_output, text="Apri file selezionato", command=self._open_selected_output).pack(pady=(0, 10))
 
         log_frame = ttk.LabelFrame(self.root, text="Log esecuzione", padding=10)
         log_frame.pack(fill="both", expand=True, padx=10, pady=5)
@@ -2793,6 +2818,7 @@ class ForecastGUI:
         self.last_output_dirs = []
         self.confronto_df = None
         self.backtest_metrics = None
+        self.output_files = []
 
         for r in risultati:
             status = "✅" if r.get('success') else "❌"
@@ -2802,7 +2828,7 @@ class ForecastGUI:
             self.results_box.insert(tk.END, line)
             if r.get('success'):
                 self.last_output_dirs.append(r.get('output_dir'))
-                if self.confronto_df is None and r.get('forecast_modelli', {}):
+                if self.backtest_metrics is None and r.get('forecast_modelli', {}):
                     self.backtest_metrics = r['forecast_modelli'].get('backtest')
                 if self.confronto_df is None and r.get('forecast_modelli', {}).get('confronto_df'):
                     self.confronto_df = r['forecast_modelli']['confronto_df']
@@ -2816,8 +2842,11 @@ class ForecastGUI:
         else:
             self.best_model_var.set("N/D")
 
+        self.best_detail_var.set(self._best_summary_text())
+
         self.refresh_plots()
         self.refresh_comparisons()
+        self.refresh_output_files()
 
     def refresh_plots(self):
         pngs = []
@@ -2863,6 +2892,7 @@ class ForecastGUI:
             self.compare_tree.insert('', 'end', values=(row['PERIODO'], row['modello'], f"{row['forecast']:.1f}", mape_str))
 
         self._refresh_metric_tree()
+        self._refresh_metric_horizon_tree()
 
     def _reliability_map(self):
         if not self.backtest_metrics:
@@ -2893,6 +2923,79 @@ class ForecastGUI:
             mape_val = vals.get('MAPE') if vals.get('MAPE') is not None else _extract(mape, 'MAPE')
             smape_val = vals.get('SMAPE') if vals.get('SMAPE') is not None else _extract(smape, 'SMAPE')
             self.metric_tree.insert('', 'end', values=(modello, _fmt(mae_val), _fmt(mape_val), _fmt(smape_val)))
+
+    def _refresh_metric_horizon_tree(self):
+        for item in self.metric_horizon_tree.get_children():
+            self.metric_horizon_tree.delete(item)
+        if not self.backtest_metrics:
+            return
+        for modello, valori in sorted(self.backtest_metrics.items()):
+            for horizon, metriche in sorted(valori.get('by_horizon', {}).items()):
+                self.metric_horizon_tree.insert('', 'end', values=(
+                    modello,
+                    f"{horizon} gg",
+                    _fmt(metriche.get('MAE')),
+                    _fmt(metriche.get('MAPE')),
+                    _fmt(metriche.get('SMAPE')),
+                ))
+
+    def _best_summary_text(self):
+        if not self.backtest_metrics:
+            return "Miglior modello: N/D (nessuna metrica disponibile)"
+        reliability = self._reliability_map()
+        if not reliability:
+            return "Miglior modello: N/D (nessuna MAPE calcolata)"
+        best_model = min(reliability, key=reliability.get)
+        best_mape = reliability[best_model]
+        horizon = None
+        by_h = self.backtest_metrics.get(best_model, {}).get('by_horizon', {})
+        if by_h:
+            horizon = min(by_h, key=lambda h: by_h[h].get('MAPE', np.inf))
+        ensemble_note = ""
+        if 'ensemble_top2' in self.backtest_metrics:
+            ensemble_note = " | ensemble_top2 disponibile"
+        horizon_txt = f" (orizzonte {horizon} gg)" if horizon else ""
+        return f"Miglior modello dal backtest: {best_model}{horizon_txt} — MAPE {best_mape:.2f}%{ensemble_note}"
+
+    def refresh_output_files(self):
+        for item in self.output_tree.get_children():
+            self.output_tree.delete(item)
+        self.output_files = self._collect_output_files()
+        for name, tipo, path in self.output_files:
+            self.output_tree.insert('', 'end', values=(name, tipo, path))
+
+    def _collect_output_files(self):
+        files = []
+        for out_dir in self.last_output_dirs:
+            if not out_dir or not os.path.isdir(out_dir):
+                continue
+            for pattern, tipo in [("*.xlsx", "Excel"), ("*.txt", "Testo")]:
+                for path in sorted(glob.glob(os.path.join(out_dir, pattern))):
+                    files.append((os.path.basename(path), tipo, path))
+        return files
+
+    def _open_selected_output(self, event=None):
+        selection = self.output_tree.selection()
+        if not selection:
+            messagebox.showinfo("Nessun file", "Seleziona un file dalla lista per aprirlo.")
+            return
+        item = selection[0]
+        path = self.output_tree.item(item, 'values')[2]
+        if not os.path.isfile(path):
+            messagebox.showerror("File non trovato", path)
+            return
+        self._open_path(path)
+
+    def _open_path(self, path):
+        try:
+            if sys.platform.startswith('win'):
+                os.startfile(path)
+            elif sys.platform == 'darwin':
+                subprocess.call(['open', path])
+            else:
+                subprocess.call(['xdg-open', path])
+        except Exception as exc:
+            messagebox.showerror("Impossibile aprire il file", str(exc))
 
     def show_plot(self):
         path = self.plot_var.get()
