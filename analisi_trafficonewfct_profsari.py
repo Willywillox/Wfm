@@ -47,6 +47,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import sys
+import queue
 import threading
 import io
 from datetime import datetime, timedelta
@@ -2610,6 +2611,29 @@ def genera_report_riassuntivo(risultati, script_dir):
         print(f"⚠️  Errore generazione report riassuntivo: {e}")
 
 
+class _GuiLogWriter:
+    """Scrive i log sia in buffer sia in una coda per aggiornamenti live GUI."""
+
+    def __init__(self, queue_obj, buffer=None):
+        self.queue = queue_obj
+        self.buffer = buffer
+
+    def write(self, msg):
+        if not msg:
+            return
+        if self.buffer is not None:
+            self.buffer.write(msg)
+        try:
+            self.queue.put_nowait(msg)
+        except Exception:
+            # Se la coda è chiusa o piena, ignoriamo per non bloccare l'esecuzione.
+            pass
+
+    def flush(self):
+        if self.buffer is not None:
+            self.buffer.flush()
+
+
 class ForecastGUI:
     """Interfaccia grafica minimale per lanciare il forecast e visualizzare output."""
 
@@ -2631,6 +2655,8 @@ class ForecastGUI:
         self.holiday_flags_vars = {h: tk.BooleanVar(value=False) for h in HOLIDAY_FLAGS}
         self.confronto_df = None
         self.backtest_metrics = None
+        self.log_queue = queue.Queue()
+        self._log_polling = False
 
         self.run_button = None
         self.results_box = None
@@ -2781,6 +2807,26 @@ class ForecastGUI:
         if path:
             self.input_dir_var.set(path)
 
+    def _start_log_polling(self):
+        if self._log_polling:
+            return
+        self._log_polling = True
+        self._poll_log_queue()
+
+    def _stop_log_polling(self):
+        self._log_polling = False
+
+    def _poll_log_queue(self):
+        while not self.log_queue.empty():
+            try:
+                msg = self.log_queue.get_nowait()
+            except queue.Empty:
+                break
+            self.log_widget.insert(tk.END, msg)
+            self.log_widget.see(tk.END)
+        if self._log_polling:
+            self.root.after(200, self._poll_log_queue)
+
     def run_analysis(self):
         try:
             giorni = int(self.forecast_days_var.get())
@@ -2801,6 +2847,12 @@ class ForecastGUI:
         self.log_widget.delete("1.0", tk.END)
         self.results_box.delete(0, tk.END)
         self.best_model_var.set("In esecuzione...")
+        while not self.log_queue.empty():
+            try:
+                self.log_queue.get_nowait()
+            except queue.Empty:
+                break
+        self._start_log_polling()
 
         thread = threading.Thread(
             target=self._run_batch,
@@ -2811,6 +2863,7 @@ class ForecastGUI:
 
     def _run_batch(self, giorni, holidays, input_root, modelli):
         buffer = io.StringIO()
+        log_writer = _GuiLogWriter(self.log_queue, buffer)
         input_dirs = [input_root]
         nested = os.path.join(input_root, "file input")
         if os.path.isdir(nested):
@@ -2818,7 +2871,7 @@ class ForecastGUI:
 
         risultati = []
         try:
-            with redirect_stdout(buffer), redirect_stderr(buffer):
+            with redirect_stdout(log_writer), redirect_stderr(log_writer):
                 risultati = main(
                     giorni_forecast=giorni,
                     escludi_festivita=holidays or None,
@@ -2826,14 +2879,16 @@ class ForecastGUI:
                     metodi=modelli
                 )
         except Exception as exc:
-            buffer.write(f"\n❌ Errore GUI: {exc}\n")
+            log_writer.write(f"\n❌ Errore GUI: {exc}\n")
 
         output_text = buffer.getvalue()
         self.root.after(0, lambda: self._on_run_complete(risultati, output_text))
 
     def _on_run_complete(self, risultati, output_text):
         self.run_button.config(state="normal")
-        self.log_widget.insert(tk.END, output_text)
+        self._poll_log_queue()
+        if self.log_widget.index("end-1c") == "1.0" and output_text:
+            self.log_widget.insert(tk.END, output_text)
         self.log_widget.see(tk.END)
 
         self.results_box.delete(0, tk.END)
@@ -2870,6 +2925,7 @@ class ForecastGUI:
         self.refresh_plots()
         self.refresh_comparisons()
         self.refresh_output_files()
+        self._stop_log_polling()
 
     def refresh_plots(self):
         pngs = []
