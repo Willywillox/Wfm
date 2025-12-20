@@ -61,6 +61,7 @@ import tempfile
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
+import time
 warnings.filterwarnings('ignore')
 
 # Parametri globali per IC basate su quantili dei residui
@@ -2657,6 +2658,9 @@ class ForecastGUI:
         self.backtest_metrics = None
         self.log_queue = queue.Queue()
         self._log_polling = False
+        self._last_log_ts = None
+        self._last_heartbeat_ts = None
+        self._worker_thread = None
 
         self.run_button = None
         self.results_box = None
@@ -2824,8 +2828,28 @@ class ForecastGUI:
                 break
             self.log_widget.insert(tk.END, msg)
             self.log_widget.see(tk.END)
+            self._last_log_ts = time.time()
         if self._log_polling:
             self.root.after(200, self._poll_log_queue)
+
+    def _start_heartbeat(self):
+        self._last_log_ts = time.time()
+        self._last_heartbeat_ts = time.time()
+        self.root.after(1000, self._heartbeat_tick)
+
+    def _stop_heartbeat(self):
+        self._worker_thread = None
+
+    def _heartbeat_tick(self):
+        now = time.time()
+        if self._worker_thread and self._worker_thread.is_alive():
+            if self._last_log_ts and now - self._last_log_ts > 5 and (
+                not self._last_heartbeat_ts or now - self._last_heartbeat_ts > 5
+            ):
+                self.log_widget.insert(tk.END, "⏳ Elaborazione in corso...\n")
+                self.log_widget.see(tk.END)
+                self._last_heartbeat_ts = now
+            self.root.after(1000, self._heartbeat_tick)
 
     def run_analysis(self):
         try:
@@ -2853,6 +2877,7 @@ class ForecastGUI:
             except queue.Empty:
                 break
         self._start_log_polling()
+        self._start_heartbeat()
 
         self.log_widget.insert(tk.END, "Avvio elaborazione...\n")
         self.log_widget.insert(tk.END, f"  Giorni forecast: {giorni}\n")
@@ -2867,6 +2892,7 @@ class ForecastGUI:
             args=(giorni, holidays_list, input_root, selected_models),
             daemon=True,
         )
+        self._worker_thread = thread
         thread.start()
 
     def _run_batch(self, giorni, holidays, input_root, modelli):
@@ -2896,6 +2922,7 @@ class ForecastGUI:
         self.run_button.config(state="normal")
         self._poll_log_queue()
         self._drain_log_queue()
+        self._stop_heartbeat()
         if self.log_widget.index("end-1c") == "1.0" and output_text:
             self.log_widget.insert(tk.END, output_text)
         self.log_widget.see(tk.END)
