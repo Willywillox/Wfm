@@ -37,8 +37,8 @@ AUTORE: Analisi WFM Call Center
 VERSIONE: 2.0 Enhanced (con multiple stagionalità)
 """
 
-SCRIPT_VERSION = "2.1.1"
-LAST_UPDATE = "2025-11-21"
+SCRIPT_VERSION = "2.2.0"
+LAST_UPDATE = "2025-11-22"
 
 import matplotlib
 matplotlib.use("Agg")
@@ -46,13 +46,19 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+import sys
+import threading
+import io
 from datetime import datetime, timedelta
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout, redirect_stderr
 import os
 import glob
 from pathlib import Path
 import warnings
 import tempfile
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+from tkinter.scrolledtext import ScrolledText
 warnings.filterwarnings('ignore')
 
 # Parametri globali per IC basate su quantili dei residui
@@ -166,14 +172,25 @@ sns.set_palette("husl")
 # TROVA FILE EXCEL
 # =============================================================================
 
-def trova_file_excel():
-    """Trova automaticamente tutti i file Excel nella cartella dello script."""
+def trova_file_excel(custom_dirs=None):
+    """Trova automaticamente tutti i file Excel disponibili.
+
+    Se custom_dirs è valorizzato, cerca nei percorsi indicati;
+    altrimenti usa la cartella dello script e la sottocartella ``file input``.
+    """
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
-    search_roots = [script_dir]
-    input_dir = os.path.join(script_dir, "file input")
-    if os.path.isdir(input_dir):
-        search_roots.append(input_dir)
+    search_roots = []
+    if custom_dirs:
+        for path in custom_dirs:
+            if path and os.path.isdir(path):
+                search_roots.append(path)
+
+    if not search_roots:
+        search_roots.append(script_dir)
+        input_dir = os.path.join(script_dir, "file input")
+        if os.path.isdir(input_dir):
+            search_roots.append(input_dir)
 
     patterns = ["*.xlsx", "*.xlsm", "*.xls"]
     file_excel = []
@@ -2394,7 +2411,7 @@ def processa_singolo_file(file_path, output_dir, giorni_forecast=28, escludi_fes
 # MAIN - BATCH PROCESSING
 # =============================================================================
 
-def main(giorni_forecast=28, escludi_festivita=None):
+def main(giorni_forecast=28, escludi_festivita=None, input_dirs=None):
     """
     Elabora tutti i file Excel trovati nella cartella dello script.
     Per ogni file crea una cartella output separata.
@@ -2402,6 +2419,7 @@ def main(giorni_forecast=28, escludi_festivita=None):
     Args:
         giorni_forecast: numero di giorni da prevedere nel forecast (default 28)
         escludi_festivita: lista festività da escludere da Prophet (default None)
+        input_dirs: percorsi personalizzati per cercare i file Excel (default None)
 
     Returns:
         list di dict con risultati per ogni file
@@ -2411,7 +2429,7 @@ def main(giorni_forecast=28, escludi_festivita=None):
     print("=" * 80)
 
     # Trova tutti i file Excel
-    file_excel_list = trova_file_excel()
+    file_excel_list = trova_file_excel(custom_dirs=input_dirs)
 
     if len(file_excel_list) == 0:
         print("❌ Nessun file Excel trovato!")
@@ -2525,7 +2543,197 @@ def genera_report_riassuntivo(risultati, script_dir):
     except Exception as e:
         print(f"⚠️  Errore generazione report riassuntivo: {e}")
 
+
+class ForecastGUI:
+    """Interfaccia grafica minimale per lanciare il forecast e visualizzare output."""
+
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title("Forecast Call Center - GUI")
+        self.root.geometry("960x700")
+        self.root.configure(bg="#f7f7f7")
+
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        self.input_dir_var = tk.StringVar(value=script_dir)
+        self.forecast_days_var = tk.StringVar(value="90")
+        self.holidays_var = tk.StringVar(value="")
+        self.best_model_var = tk.StringVar(value="N/D")
+
+        self.run_button = None
+        self.results_box = None
+        self.log_widget = None
+        self.plot_combo = None
+        self.plot_var = tk.StringVar()
+        self.image_label = None
+        self.image_caption = None
+        self.current_image = None
+        self.last_output_dirs = []
+
+        self._build_layout()
+
+    def _build_layout(self):
+        header = ttk.Label(self.root, text=f"Forecast WFM - versione {SCRIPT_VERSION}", font=("Helvetica", 16, "bold"))
+        header.pack(pady=8)
+
+        form_frame = ttk.Frame(self.root, padding=10)
+        form_frame.pack(fill="x")
+
+        ttk.Label(form_frame, text="Cartella input Excel:").grid(row=0, column=0, sticky="w")
+        input_entry = ttk.Entry(form_frame, textvariable=self.input_dir_var, width=80)
+        input_entry.grid(row=0, column=1, padx=5, pady=2, sticky="we")
+        ttk.Button(form_frame, text="Sfoglia", command=self.browse_input).grid(row=0, column=2, padx=5)
+
+        ttk.Label(form_frame, text="Giorni forecast:").grid(row=1, column=0, sticky="w")
+        ttk.Entry(form_frame, textvariable=self.forecast_days_var, width=10).grid(row=1, column=1, sticky="w", pady=2)
+
+        ttk.Label(form_frame, text="Festività da escludere (virgola):").grid(row=2, column=0, sticky="w")
+        ttk.Entry(form_frame, textvariable=self.holidays_var, width=60).grid(row=2, column=1, columnspan=2, sticky="we", pady=2)
+
+        self.run_button = ttk.Button(form_frame, text="Esegui forecast", command=self.run_analysis)
+        self.run_button.grid(row=3, column=0, pady=8, sticky="w")
+
+        ttk.Label(form_frame, text="Miglior modello rilevato:").grid(row=3, column=1, sticky="e")
+        ttk.Label(form_frame, textvariable=self.best_model_var, font=("Helvetica", 10, "bold"), foreground="#2c7a7b").grid(row=3, column=2, sticky="w")
+
+        form_frame.columnconfigure(1, weight=1)
+
+        results_frame = ttk.LabelFrame(self.root, text="Risultati ultimi run", padding=10)
+        results_frame.pack(fill="both", expand=False, padx=10, pady=5)
+        self.results_box = tk.Listbox(results_frame, height=6)
+        self.results_box.pack(fill="x", expand=True)
+
+        plots_frame = ttk.LabelFrame(self.root, text="Grafici generati", padding=10)
+        plots_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        combo_frame = ttk.Frame(plots_frame)
+        combo_frame.pack(fill="x")
+        ttk.Label(combo_frame, text="Seleziona grafico PNG dall'ultimo output:").pack(side="left")
+        self.plot_combo = ttk.Combobox(combo_frame, textvariable=self.plot_var, width=70, state="readonly")
+        self.plot_combo.pack(side="left", padx=5, fill="x", expand=True)
+        ttk.Button(combo_frame, text="Mostra", command=self.show_plot).pack(side="left")
+
+        self.image_label = ttk.Label(plots_frame)
+        self.image_label.pack(pady=6)
+        self.image_caption = ttk.Label(plots_frame, font=("Helvetica", 9, "italic"))
+        self.image_caption.pack()
+
+        log_frame = ttk.LabelFrame(self.root, text="Log esecuzione", padding=10)
+        log_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        self.log_widget = ScrolledText(log_frame, height=12)
+        self.log_widget.pack(fill="both", expand=True)
+
+    def browse_input(self):
+        path = filedialog.askdirectory(title="Seleziona cartella input")
+        if path:
+            self.input_dir_var.set(path)
+
+    def run_analysis(self):
+        try:
+            giorni = int(self.forecast_days_var.get())
+        except ValueError:
+            messagebox.showerror("Valore non valido", "Inserisci un numero di giorni intero.")
+            return
+
+        holidays_list = [h.strip() for h in self.holidays_var.get().split(',') if h.strip()]
+        input_root = self.input_dir_var.get()
+
+        self.run_button.config(state="disabled")
+        self.log_widget.delete("1.0", tk.END)
+        self.results_box.delete(0, tk.END)
+        self.best_model_var.set("In esecuzione...")
+
+        thread = threading.Thread(
+            target=self._run_batch,
+            args=(giorni, holidays_list, input_root),
+            daemon=True,
+        )
+        thread.start()
+
+    def _run_batch(self, giorni, holidays, input_root):
+        buffer = io.StringIO()
+        input_dirs = [input_root]
+        nested = os.path.join(input_root, "file input")
+        if os.path.isdir(nested):
+            input_dirs.append(nested)
+
+        risultati = []
+        try:
+            with redirect_stdout(buffer), redirect_stderr(buffer):
+                risultati = main(giorni_forecast=giorni, escludi_festivita=holidays or None, input_dirs=input_dirs)
+        except Exception as exc:
+            buffer.write(f"\n❌ Errore GUI: {exc}\n")
+
+        output_text = buffer.getvalue()
+        self.root.after(0, lambda: self._on_run_complete(risultati, output_text))
+
+    def _on_run_complete(self, risultati, output_text):
+        self.run_button.config(state="normal")
+        self.log_widget.insert(tk.END, output_text)
+        self.log_widget.see(tk.END)
+
+        self.results_box.delete(0, tk.END)
+        best_models = []
+        self.last_output_dirs = []
+
+        for r in risultati:
+            status = "✅" if r.get('success') else "❌"
+            name = os.path.basename(r.get('file_path', 'sconosciuto'))
+            best = r.get('miglior_modello', 'N/D')
+            line = f"{status} {name} | best: {best}"
+            self.results_box.insert(tk.END, line)
+            if r.get('success'):
+                self.last_output_dirs.append(r.get('output_dir'))
+            if r.get('miglior_modello'):
+                best_models.append(r['miglior_modello'])
+
+        if best_models:
+            self.best_model_var.set(", ".join(sorted(set(best_models))) )
+        else:
+            self.best_model_var.set("N/D")
+
+        self.refresh_plots()
+
+    def refresh_plots(self):
+        pngs = []
+        for out_dir in self.last_output_dirs:
+            if out_dir and os.path.isdir(out_dir):
+                pngs.extend(sorted(glob.glob(os.path.join(out_dir, "*.png"))))
+
+        self.plot_combo['values'] = pngs
+        if pngs:
+            self.plot_var.set(pngs[0])
+            self.show_plot()
+        else:
+            self.plot_var.set("")
+            self.image_label.configure(image="")
+            self.image_caption.configure(text="")
+
+    def show_plot(self):
+        path = self.plot_var.get()
+        if not path or not os.path.isfile(path):
+            messagebox.showinfo("Nessun grafico", "Esegui una run per caricare i grafici disponibili.")
+            return
+
+        try:
+            img = tk.PhotoImage(file=path)
+        except Exception as exc:
+            messagebox.showerror("Errore apertura grafico", str(exc))
+            return
+
+        self.current_image = img
+        self.image_label.configure(image=img)
+        self.image_caption.configure(text=os.path.basename(path))
+
+    def run(self):
+        self.root.mainloop()
+
+
 if __name__ == "__main__":
+    if "--gui" in sys.argv or os.environ.get("FORECAST_GUI") == "1":
+        gui = ForecastGUI()
+        gui.run()
+        sys.exit(0)
+
     print("\n" + "=" * 80)
     print(f"SCRIPT AGGIORNATO: versione {SCRIPT_VERSION} (ultimo update: {LAST_UPDATE})")
     print("=" * 80 + "\n")

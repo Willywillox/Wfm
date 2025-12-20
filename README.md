@@ -12,6 +12,22 @@ Repository con script di analisi e forecasting per il traffico call center.
   - `Metriche_per_Orizzonte` con MAE/MAPE/SMAPE per ciascun orizzonte (14/30/60/90 gg o l’orizzonte richiesto)
   - `monitoraggio_metriche.txt` (plain-text) che registra a ogni run il modello migliore e le sue metriche, utile per capire se le performance stanno migliorando o peggiorando nel tempo.
 
+## Modalità GUI (interfaccia grafica)
+Per lanciare le analisi senza modificare il codice ed esplorare i grafici:
+
+1. Avvia lo script in modalità GUI:
+   ```bash
+   python analisi_trafficonewfct_profsari.py --gui
+   ```
+2. Seleziona la cartella con gli Excel (la GUI cerca anche nella sottocartella `file input`).
+3. Imposta i giorni di forecast e, se serve, le festività da escludere (separate da virgola).
+4. Clicca "Esegui forecast":
+   - i log della run appaiono nel riquadro in basso
+   - la lista dei file processati mostra stato e modello vincente
+   - il menu a discesa "Grafici generati" si popola con i PNG dell’ultimo output, che puoi visualizzare direttamente nella GUI
+
+Per usare la GUI anche da ambienti orchestrati, imposta la variabile d’ambiente `FORECAST_GUI=1` invece del flag `--gui`.
+
 ## Come valutare il modello migliore dal backtest
 Lo script salva un file con le metriche di backtest (es. `valutazione_forecast.xlsx`) dove ogni riga rappresenta uno split rolling. Le colonne più utili sono:
 - `HW_MAE/RMSE/MAPE`: errori del modello Holt-Winters (baseline stagionale/di trend).
