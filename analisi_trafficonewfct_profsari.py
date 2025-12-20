@@ -73,6 +73,7 @@ HOLIDAY_FLAGS = [
 ]
 
 VERBOSE = os.environ.get("FORECAST_VERBOSE", "0").lower() not in ("0", "false", "no", "")
+FAST_MODE = os.environ.get("FORECAST_FAST", "0").lower() not in ("0", "false", "no", "") or "--fast" in sys.argv
 
 
 def log_debug(message: str):
@@ -1074,12 +1075,16 @@ def _run_forecast_for_backtest(metodo, df_train, horizon):
     return None
 
 
-def _esegui_backtest(df, metodi, giorni_forecast):
+def _esegui_backtest(df, metodi, giorni_forecast, fast_mode=False):
     print("\nESECUZIONE BACKTEST (rolling origin)")
     print("=" * 80)
     daily_series = df.groupby('DATA')['OFFERTO'].sum().sort_index()
 
     base_horizons = [14, 30, 60, 90, giorni_forecast]
+    max_windows = None
+    if fast_mode:
+        base_horizons = [min(30, giorni_forecast), giorni_forecast]
+        max_windows = 2
     horizons = sorted({h for h in base_horizons if h > 0})
 
     summary = {}
@@ -1087,6 +1092,8 @@ def _esegui_backtest(df, metodi, giorni_forecast):
         horizon = int(horizon)
         min_train = max(28, horizon * 2)
         step = max(7, horizon // 2)
+        if fast_mode:
+            step = max(step, horizon)
 
         if len(daily_series) <= min_train + horizon:
             print(f"⚠️  Backtest {horizon} giorni saltato: servono almeno {min_train + horizon} giorni, trovati {len(daily_series)}")
@@ -1095,7 +1102,10 @@ def _esegui_backtest(df, metodi, giorni_forecast):
         dates = daily_series.index.to_list()
         metrics = {m: [] for m in metodi}
 
+        windows_done = 0
         for start_idx in range(min_train, len(dates) - horizon + 1, step):
+            if max_windows and windows_done >= max_windows:
+                break
             train_end = dates[start_idx - 1]
             test_dates = dates[start_idx:start_idx + horizon]
             df_train = df[df['DATA'] <= train_end]
@@ -1110,6 +1120,7 @@ def _esegui_backtest(df, metodi, giorni_forecast):
                 metric = _compute_error_metrics(actual, predicted)
                 if metric:
                     metrics[metodo].append(metric)
+            windows_done += 1
 
         print(f"Metriche medie (rolling) - orizzonte {horizon} giorni:")
         for metodo, valori in metrics.items():
@@ -1839,7 +1850,7 @@ def _salva_forecast_completo(output_dir, confronto_df, backtest_metrics, best_mo
     return actual_path
 
 
-def genera_forecast_modelli(df, output_dir, giorni_forecast=28, metodi=None, escludi_festivita=None):
+def genera_forecast_modelli(df, output_dir, giorni_forecast=28, metodi=None, escludi_festivita=None, fast_mode=False):
     """
     Esegue più modelli di forecast in parallelo e produce un confronto.
 
@@ -1851,8 +1862,13 @@ def genera_forecast_modelli(df, output_dir, giorni_forecast=28, metodi=None, esc
                  (valori supportati: 'holtwinters', 'pattern', 'naive', 'sarima', 'prophet', 'tbats', 'intraday_dinamico')
         escludi_festivita: lista festività da escludere da Prophet (es. ['Natale'] se apri quando prima eri chiuso)
     """
+    if fast_mode:
+        print("   ⚡ Modalità veloce: eseguo solo modelli rapidi e TBATS senza grafici")
     if metodi is None:
-        metodi = ('holtwinters', 'pattern', 'naive', 'sarima', 'prophet', 'tbats', 'intraday_dinamico')
+        if fast_mode:
+            metodi = ('holtwinters', 'naive', 'pattern', 'intraday_dinamico')
+        else:
+            metodi = ('holtwinters', 'pattern', 'naive', 'sarima', 'prophet', 'tbats', 'intraday_dinamico')
 
     risultati = {}
     confronto_frames = []
@@ -1887,7 +1903,7 @@ def genera_forecast_modelli(df, output_dir, giorni_forecast=28, metodi=None, esc
                     print(f"   Forecast Prophet salvato: {actual_path.name}")
             elif metodo == 'tbats':
                 print(f"   Avvio TBATS...")
-                risultati[metodo] = _forecast_tbats(df, giorni_forecast, produce_outputs=True)
+                risultati[metodo] = _forecast_tbats(df, giorni_forecast, produce_outputs=not fast_mode)
                 if risultati[metodo] is not None:
                     actual_path = _salva_forecast_excel(output_dir, 'forecast_tbats.xlsx', risultati[metodo])
                     print(f"   ✅ Forecast TBATS salvato: {actual_path.name}")
@@ -1943,7 +1959,7 @@ def genera_forecast_modelli(df, output_dir, giorni_forecast=28, metodi=None, esc
             simbolo = "✅" if stato['successo'] else "⚠️"
             print(f" {simbolo} {stato['metodo']}: {stato['dettaglio']}")
 
-    backtest_metrics = _esegui_backtest(df, metodi, giorni_forecast)
+    backtest_metrics = _esegui_backtest(df, metodi, giorni_forecast, fast_mode=fast_mode)
     best_model = None
     if backtest_metrics:
         risultati['backtest'] = backtest_metrics
@@ -2060,7 +2076,7 @@ def _calcola_metriche_forecast(y_true, y_pred):
     return {'MAE': mae, 'RMSE': rmse, 'MAPE': mape}
 
 
-def valuta_modelli_forecast(df, output_dir, giorni_forecast=28, min_train_giorni=56, step_giorni=7):
+def valuta_modelli_forecast(df, output_dir, giorni_forecast=28, min_train_giorni=56, step_giorni=7, fast_mode=False):
     print("\nVALUTAZIONE FORECAST HOLT-WINTERS")
 
     if not STATSMODELS_AVAILABLE:
@@ -2079,6 +2095,10 @@ def valuta_modelli_forecast(df, output_dir, giorni_forecast=28, min_train_giorni
     daily = daily.asfreq('D', fill_value=0)
     min_train = max(min_train_giorni, giorni_forecast * 2)
     step = max(1, step_giorni)
+    max_splits = None
+    if fast_mode:
+        step = max(step, giorni_forecast)
+        max_splits = 3
 
     try:
         from statsmodels.tsa.holtwinters import ExponentialSmoothing
@@ -2095,7 +2115,9 @@ def valuta_modelli_forecast(df, output_dir, giorni_forecast=28, min_train_giorni
 
     print(f"  Eseguo {total_splits} split di validazione rolling (orizzonte {giorni_forecast} giorni)")
 
-    for cutoff in range(min_train, len(daily) - giorni_forecast + 1, step):
+    for idx, cutoff in enumerate(range(min_train, len(daily) - giorni_forecast + 1, step), 1):
+        if max_splits and idx > max_splits:
+            break
         train = daily.iloc[:cutoff]
         test = daily.iloc[cutoff:cutoff + giorni_forecast]
 
@@ -2398,7 +2420,7 @@ def processa_singolo_file(file_path, output_dir, giorni_forecast=28, escludi_fes
         kpi = dashboard_kpi_consuntivi(df, output_dir)
 
         print("\n[12/16] Valutazione forecast (backtest Holt-Winters)...")
-        valutazione = valuta_modelli_forecast(df, output_dir, giorni_forecast=giorni_forecast)
+        valutazione = valuta_modelli_forecast(df, output_dir, giorni_forecast=giorni_forecast, fast_mode=FAST_MODE)
 
         print("\n[13/16] Forecast multi-modello...")
         forecast_modelli = genera_forecast_modelli(
@@ -2406,7 +2428,8 @@ def processa_singolo_file(file_path, output_dir, giorni_forecast=28, escludi_fes
             output_dir,
             giorni_forecast=giorni_forecast,
             metodi=metodi,
-            escludi_festivita=escludi_festivita
+            escludi_festivita=escludi_festivita,
+            fast_mode=FAST_MODE
         )
         forecast_completo = forecast_modelli.get('holtwinters')
         if forecast_completo is None:
@@ -3098,6 +3121,8 @@ if __name__ == "__main__":
     print(f"\n>>> FORECAST CONFIGURATO: {GIORNI_FORECAST} GIORNI <<<")
     print(f"    Equivalente a: {GIORNI_FORECAST/7:.1f} settimane")
     print(f"    Equivalente a: {GIORNI_FORECAST/30:.1f} mesi circa")
+    if FAST_MODE:
+        print("    Modalità veloce ATTIVA: modelli leggeri e backtest ridotto")
     print("=" * 80 + "\n")
     
     # Esegui batch processing CON I PARAMETRI CORRETTI

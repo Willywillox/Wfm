@@ -33,6 +33,18 @@ Per lanciare le analisi senza modificare il codice ed esplorare i grafici:
 
 Per usare la GUI anche da ambienti orchestrati, imposta la variabile d’ambiente `FORECAST_GUI=1` invece del flag `--gui`.
 
+## Modalità veloce (per run più rapide)
+Se l’esecuzione completa risulta troppo lenta puoi attivare la modalità veloce, che:
+- limita il backtest rolling a poche finestre e a due orizzonti (30 giorni e quello richiesto)
+- esegue solo i modelli rapidi (Holt-Winters, naïve, pattern, intraday dinamico) a meno che tu non specifichi diversamente
+- disattiva i grafici TBATS per ridurre tempo e memoria
+
+Come attivarla:
+- da CLI: `python analisi_trafficonewfct_profsari.py --fast`
+- via variabile d’ambiente: `FORECAST_FAST=1 python analisi_trafficonewfct_profsari.py`
+
+Nel banner iniziale vedrai la dicitura “Modalità veloce ATTIVA” quando il profilo rapido è abilitato.
+
 ## Come valutare il modello migliore dal backtest
 Lo script salva un file con le metriche di backtest (es. `valutazione_forecast.xlsx`) dove ogni riga rappresenta uno split rolling. Le colonne più utili sono:
 - `HW_MAE/RMSE/MAPE`: errori del modello Holt-Winters (baseline stagionale/di trend).
