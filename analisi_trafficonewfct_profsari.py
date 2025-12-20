@@ -2934,7 +2934,9 @@ class ForecastGUI:
             input_dirs.append(nested)
 
         risultati = []
+        old_stdout, old_stderr = sys.stdout, sys.stderr
         try:
+            sys.stdout, sys.stderr = log_writer, log_writer
             with redirect_stdout(log_writer), redirect_stderr(log_writer):
                 log_writer.write("\n>>> Avvio batch forecast dalla GUI...\n")
                 log_writer.write(f"Cartelle input: {', '.join(input_dirs)}\n")
@@ -2951,6 +2953,7 @@ class ForecastGUI:
         except Exception as exc:
             log_writer.write(f"\n❌ Errore GUI: {exc}\n")
         finally:
+            sys.stdout, sys.stderr = old_stdout, old_stderr
             try:
                 root_logger.removeHandler(queue_handler)
             except Exception:
@@ -2966,7 +2969,7 @@ class ForecastGUI:
         self._poll_log_queue()
         self._drain_log_queue()
         self._stop_heartbeat()
-        if self.log_widget.index("end-1c") == "1.0" and output_text:
+        if output_text:
             self.log_widget.insert(tk.END, output_text)
         self.log_widget.see(tk.END)
 
