@@ -40,6 +40,7 @@ VERSIONE: 2.0 Enhanced (con multiple stagionalità)
 SCRIPT_VERSION = "2.3.0"
 LAST_UPDATE = "2025-11-23"
 
+import logging
 import matplotlib
 matplotlib.use("Agg")
 import pandas as pd
