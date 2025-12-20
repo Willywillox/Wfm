@@ -2854,6 +2854,14 @@ class ForecastGUI:
                 break
         self._start_log_polling()
 
+        self.log_widget.insert(tk.END, "Avvio elaborazione...\n")
+        self.log_widget.insert(tk.END, f"  Giorni forecast: {giorni}\n")
+        self.log_widget.insert(tk.END, f"  Modelli selezionati: {', '.join(selected_models)}\n")
+        if holidays_list:
+            self.log_widget.insert(tk.END, f"  Festività escluse: {', '.join(holidays_list)}\n")
+        self.log_widget.insert(tk.END, "  Log in tempo reale qui sotto...\n\n")
+        self.log_widget.see(tk.END)
+
         thread = threading.Thread(
             target=self._run_batch,
             args=(giorni, holidays_list, input_root, selected_models),
@@ -2887,6 +2895,7 @@ class ForecastGUI:
     def _on_run_complete(self, risultati, output_text):
         self.run_button.config(state="normal")
         self._poll_log_queue()
+        self._drain_log_queue()
         if self.log_widget.index("end-1c") == "1.0" and output_text:
             self.log_widget.insert(tk.END, output_text)
         self.log_widget.see(tk.END)
@@ -2926,6 +2935,22 @@ class ForecastGUI:
         self.refresh_comparisons()
         self.refresh_output_files()
         self._stop_log_polling()
+
+        if not risultati:
+            self.log_widget.insert(tk.END, "⚠️  Elaborazione terminata senza risultati. Controlla i log sopra.\n")
+        else:
+            self.log_widget.insert(tk.END, "\n✅ Elaborazione completata. Riepilogo aggiornato.\n")
+        self.log_widget.see(tk.END)
+
+    def _drain_log_queue(self):
+        # Assicura che nessun messaggio rimanga bloccato in coda quando si chiude il polling
+        while not self.log_queue.empty():
+            try:
+                msg = self.log_queue.get_nowait()
+            except queue.Empty:
+                break
+            self.log_widget.insert(tk.END, msg)
+            self.log_widget.see(tk.END)
 
     def refresh_plots(self):
         pngs = []
