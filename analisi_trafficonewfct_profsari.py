@@ -2660,15 +2660,21 @@ def genera_report_riassuntivo(risultati, script_dir):
 class _GuiLogWriter:
     """Scrive i log sia in buffer sia in una coda per aggiornamenti live GUI."""
 
-    def __init__(self, queue_obj, buffer=None):
+    def __init__(self, queue_obj, buffer=None, mirror_stream=None):
         self.queue = queue_obj
         self.buffer = buffer
+        self.mirror_stream = mirror_stream  # opzionale: duplica su stdout/stderr originale
 
     def write(self, msg):
         if not msg:
             return
         if self.buffer is not None:
             self.buffer.write(msg)
+        if self.mirror_stream is not None:
+            try:
+                self.mirror_stream.write(msg)
+            except Exception:
+                pass
         try:
             self.queue.put_nowait(msg)
         except Exception:
@@ -2678,6 +2684,11 @@ class _GuiLogWriter:
     def flush(self):
         if self.buffer is not None:
             self.buffer.flush()
+        if self.mirror_stream is not None:
+            try:
+                self.mirror_stream.flush()
+            except Exception:
+                pass
 
 
 class _QueueLogHandler(logging.Handler):
@@ -2960,7 +2971,8 @@ class ForecastGUI:
 
     def _run_batch(self, giorni, holidays, input_root, modelli):
         buffer = io.StringIO()
-        log_writer = _GuiLogWriter(self.log_queue, buffer)
+        # Duplica i log anche sullo stdout/stderr originale per visibilità da terminale
+        log_writer = _GuiLogWriter(self.log_queue, buffer, mirror_stream=sys.stdout)
         queue_handler = _QueueLogHandler(self.log_queue)
         queue_handler.setFormatter(logging.Formatter("%(message)s"))
         root_logger = logging.getLogger()
