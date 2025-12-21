@@ -32,6 +32,11 @@ Per lanciare le analisi senza modificare il codice ed esplorare i grafici:
    - il tab **File & Metriche** elenca gli output generati (xlsx/txt) e li apre con doppio click, insieme al riepilogo del modello migliore rilevato dal backtest
    - il tab **Guida modelli** riassume quando usare ciascun modello
 
+### Come vengono elaborati i file di input
+- Lo script (CLI o GUI) scansiona automaticamente la cartella dello script **e** la sottocartella `file input` per tutti i file Excel (`.xlsx`, `.xlsm`, `.xls`).
+- Se scegli una cartella personalizzata in GUI o passi un percorso con `--input-dir`, **tutti** i file Excel in quella cartella (più l’eventuale `file input` al suo interno) vengono messi in coda e processati uno dopo l’altro.
+- Ogni file ha la propria cartella di output (`output/<nome_file_senza_estensione>/`) e contribuisce al report riassuntivo `_report_riassuntivo.xlsx`, così puoi verificare rapidamente che ogni dataset sia stato elaborato.
+
 Per usare la GUI anche da ambienti orchestrati, imposta la variabile d’ambiente `FORECAST_GUI=1` invece del flag `--gui`.
 
 ## Modalità veloce (per run più rapide)
