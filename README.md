@@ -30,6 +30,7 @@ Per lanciare le analisi senza modificare il codice ed esplorare i grafici:
    - il tab **Grafici** si popola con i PNG dell’ultimo output, che puoi visualizzare direttamente nella GUI
    - il tab **Confronti & Affidabilità** mostra le curve aggregate per giorno/settimana/mese e gli indici MAE/MAPE/SMAPE dei modelli eseguiti (anche per orizzonte)
    - il tab **File & Metriche** elenca gli output generati (xlsx/txt) e li apre con doppio click, insieme al riepilogo del modello migliore rilevato dal backtest
+   - il tab **Log live** replica il prompt, con pulsanti per copiare o azzerare il log mentre i modelli sono in esecuzione
    - il tab **Guida modelli** riassume quando usare ciascun modello
 
 ### Come vengono elaborati i file di input

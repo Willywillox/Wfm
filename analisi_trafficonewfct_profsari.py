@@ -2815,10 +2815,12 @@ class ForecastGUI:
         tab_plots = ttk.Frame(notebook)
         tab_compare = ttk.Frame(notebook)
         tab_output = ttk.Frame(notebook)
+        tab_log = ttk.Frame(notebook)
         tab_guide = ttk.Frame(notebook)
         notebook.add(tab_plots, text="Grafici")
         notebook.add(tab_compare, text="Confronti & Affidabilità")
         notebook.add(tab_output, text="File & Metriche")
+        notebook.add(tab_log, text="Log live")
         notebook.add(tab_guide, text="Guida modelli")
 
         combo_frame = ttk.Frame(tab_plots, padding=10)
@@ -2882,15 +2884,28 @@ class ForecastGUI:
         self.output_tree.bind('<Double-1>', self._open_selected_output)
         ttk.Button(tab_output, text="Apri file selezionato", command=self._open_selected_output).pack(pady=(0, 10))
 
-        log_frame = ttk.LabelFrame(self.root, text="Log esecuzione", padding=10)
-        log_frame.pack(fill="both", expand=True, padx=10, pady=5)
-        self.log_widget = ScrolledText(log_frame, height=12)
-        self.log_widget.pack(fill="both", expand=True)
+        log_hint = ttk.Label(tab_log, text="Avanzamento in tempo reale (replica il prompt)", font=("Helvetica", 10, "bold"))
+        log_hint.pack(pady=(8, 4))
+        log_actions = ttk.Frame(tab_log)
+        log_actions.pack(fill="x", padx=10)
+        ttk.Button(log_actions, text="Cancella log", command=lambda: self.log_widget.delete("1.0", tk.END)).pack(side="left")
+        ttk.Button(log_actions, text="Copia log", command=self._copy_log).pack(side="left", padx=(6, 0))
+        self.log_widget = ScrolledText(tab_log, height=18)
+        self.log_widget.pack(fill="both", expand=True, padx=10, pady=6)
 
     def browse_input(self):
         path = filedialog.askdirectory(title="Seleziona cartella input")
         if path:
             self.input_dir_var.set(path)
+
+    def _copy_log(self):
+        try:
+            content = self.log_widget.get("1.0", tk.END).strip()
+            self.root.clipboard_clear()
+            self.root.clipboard_append(content)
+            messagebox.showinfo("Log copiato", "Il log corrente è stato copiato negli appunti.")
+        except Exception as exc:
+            messagebox.showerror("Errore copia", str(exc))
 
     def _ensure_log_polling(self):
         """Mantiene attivo il polling della coda log in maniera resiliente."""
