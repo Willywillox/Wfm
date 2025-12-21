@@ -3097,10 +3097,15 @@ class ForecastGUI:
                 self.last_output_dirs.append(r.get('output_dir'))
                 if self.backtest_metrics is None and r.get('forecast_modelli', {}):
                     self.backtest_metrics = r['forecast_modelli'].get('backtest')
-                if self.confronto_df is None and r.get('forecast_modelli', {}).get('confronto_df'):
-                    self.confronto_df = r['forecast_modelli']['confronto_df']
-                elif self.confronto_df is None and r.get('confronto_df') is not None:
-                    self.confronto_df = r.get('confronto_df')
+
+                confronto_main = r.get('forecast_modelli', {}).get('confronto_df')
+                confronto_legacy = r.get('confronto_df')
+
+                if self.confronto_df is None:
+                    if isinstance(confronto_main, pd.DataFrame) and not confronto_main.empty:
+                        self.confronto_df = confronto_main
+                    elif isinstance(confronto_legacy, pd.DataFrame) and not confronto_legacy.empty:
+                        self.confronto_df = confronto_legacy
             if r.get('miglior_modello'):
                 best_models.append(r['miglior_modello'])
 
