@@ -22,7 +22,7 @@ Per lanciare le analisi senza modificare il codice ed esplorare i grafici:
    python analisi_trafficonewfct_profsari.py --gui
    ```
 2. Seleziona la cartella con gli Excel (la GUI cerca anche nella sottocartella `file input`).
-3. Imposta i giorni di forecast, seleziona i modelli da eseguire e le festività da escludere (flag rapidi o lista separata da virgola).
+3. Imposta i giorni di forecast, seleziona i modelli da eseguire e le festività da escludere (flag rapidi o lista separata da virgola). Se vuoi velocizzare la run, spunta anche **Modalità veloce (--fast)**.
 4. Clicca "Esegui forecast":
    - i log della run appaiono **in tempo reale** nel riquadro in basso (sia i `print` sia i messaggi `logging` delle librerie come Prophet/TBATS), così vedi quali modelli stanno girando e se l'elaborazione è ancora attiva
    - se nessun messaggio arriva per qualche secondo, la GUI mostra "⏳ Elaborazione in corso..." per confermare che il batch sta ancora lavorando
@@ -49,6 +49,7 @@ Se l’esecuzione completa risulta troppo lenta puoi attivare la modalità veloc
 Come attivarla:
 - da CLI: `python analisi_trafficonewfct_profsari.py --fast`
 - via variabile d’ambiente: `FORECAST_FAST=1 python analisi_trafficonewfct_profsari.py`
+- dalla GUI: flag **Modalità veloce (--fast)** nella schermata principale
 
 Nel banner iniziale vedrai la dicitura “Modalità veloce ATTIVA” quando il profilo rapido è abilitato.
 

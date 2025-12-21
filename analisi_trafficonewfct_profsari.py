@@ -2723,6 +2723,7 @@ class ForecastGUI:
         self.forecast_days_var = tk.StringVar(value="90")
         self.holidays_var = tk.StringVar(value="")
         self.best_model_var = tk.StringVar(value="N/D")
+        self.fast_mode_var = tk.BooleanVar(value=FAST_MODE)
 
         self.model_vars = {m: tk.BooleanVar(value=True) for m in (
             'holtwinters', 'pattern', 'naive', 'sarima', 'prophet', 'tbats', 'intraday_dinamico'
@@ -2796,8 +2797,14 @@ class ForecastGUI:
             c = idx % 4
             ttk.Checkbutton(models_frame, text=modello, variable=self.model_vars[modello]).grid(row=r, column=c, sticky="w")
 
+        ttk.Checkbutton(
+            form_frame,
+            text="Modalità veloce (--fast)",
+            variable=self.fast_mode_var
+        ).grid(row=5, column=0, sticky="w")
+
         self.run_button = ttk.Button(form_frame, text="Esegui forecast", command=self.run_analysis)
-        self.run_button.grid(row=5, column=0, pady=8, sticky="w")
+        self.run_button.grid(row=5, column=0, pady=8, sticky="e")
 
         ttk.Label(form_frame, text="Miglior modello rilevato:").grid(row=5, column=1, sticky="e")
         ttk.Label(form_frame, textvariable=self.best_model_var, font=("Helvetica", 10, "bold"), foreground="#2c7a7b").grid(row=5, column=2, sticky="w")
@@ -2985,14 +2992,18 @@ class ForecastGUI:
         self.log_widget.insert(tk.END, "Avvio elaborazione...\n")
         self.log_widget.insert(tk.END, f"  Giorni forecast: {giorni}\n")
         self.log_widget.insert(tk.END, f"  Modelli selezionati: {', '.join(selected_models)}\n")
+        if self.fast_mode_var.get():
+            self.log_widget.insert(tk.END, "  Modalità veloce: ON (modelli leggeri e backtest ridotto)\n")
         if holidays_list:
             self.log_widget.insert(tk.END, f"  Festività escluse: {', '.join(holidays_list)}\n")
         self.log_widget.insert(tk.END, "  Log in tempo reale qui sotto...\n\n")
         self.log_widget.see(tk.END)
 
+        fast_mode = bool(self.fast_mode_var.get())
+
         thread = threading.Thread(
             target=self._run_batch,
-            args=(giorni, holidays_list, input_root, selected_models),
+            args=(giorni, holidays_list, input_root, selected_models, fast_mode),
             daemon=True,
         )
         self._worker_thread = thread
@@ -3000,7 +3011,7 @@ class ForecastGUI:
         self._start_buffer_sync()
         thread.start()
 
-    def _run_batch(self, giorni, holidays, input_root, modelli):
+    def _run_batch(self, giorni, holidays, input_root, modelli, fast_mode):
         buffer = io.StringIO()
         self._buffer_sync_ref = buffer
         # Duplica i log anche sullo stdout/stderr originale per visibilità da terminale
@@ -3029,14 +3040,21 @@ class ForecastGUI:
                 log_writer.write("\n>>> Avvio batch forecast dalla GUI...\n")
                 log_writer.write(f"Cartelle input: {', '.join(input_dirs)}\n")
                 log_writer.write(f"Modelli attivi: {', '.join(modelli)}\n")
+                log_writer.write(f"Profilo veloce (--fast): {'ON' if fast_mode else 'OFF'}\n")
                 if holidays:
                     log_writer.write(f"Festività escluse: {', '.join(holidays)}\n")
-                risultati = main(
-                    giorni_forecast=giorni,
-                    escludi_festivita=holidays or None,
-                    input_dirs=input_dirs,
-                    metodi=modelli
-                )
+                global FAST_MODE
+                previous_fast = FAST_MODE
+                FAST_MODE = fast_mode
+                try:
+                    risultati = main(
+                        giorni_forecast=giorni,
+                        escludi_festivita=holidays or None,
+                        input_dirs=input_dirs,
+                        metodi=modelli
+                    )
+                finally:
+                    FAST_MODE = previous_fast
                 log_writer.write("\n>>> Elaborazione completata, preparo il riepilogo...\n")
         except Exception as exc:
             log_writer.write(f"\n❌ Errore GUI: {exc}\n")
