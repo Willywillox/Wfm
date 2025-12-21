@@ -2960,6 +2960,11 @@ class ForecastGUI:
         for col, lbl in zip(self.compare_tree['columns'], ["Periodo", "Modello", "Forecast", "MAPE (%)"]):
             self.compare_tree.heading(col, text=lbl)
         self.compare_tree.pack(fill="both", expand=True, padx=10, pady=4)
+        
+        # Configura tag per i colori del semaforo
+        self.compare_tree.tag_configure('green', background='#C6F6D5')   # Verde chiaro
+        self.compare_tree.tag_configure('yellow', background='#FEFCBF')  # Giallo chiaro
+        self.compare_tree.tag_configure('red', background='#FED7D7')     # Rosso chiaro
 
         ttk.Label(tab_compare, text="Indici di affidabilità (backtest)", font=("Helvetica", 10, "bold")).pack(pady=(6, 0))
         self.metric_tree = ttk.Treeview(tab_compare, columns=("modello", "mae", "mape", "smape"), show='headings', height=6)
@@ -2973,7 +2978,29 @@ class ForecastGUI:
             self.metric_horizon_tree.heading(col, text=lbl)
         self.metric_horizon_tree.pack(fill="both", expand=True, padx=10, pady=4)
 
-        ttk.Label(tab_compare, textvariable=self.best_detail_var, font=("Helvetica", 10, "italic"), foreground="#2c5282").pack(pady=(2, 8))
+        # --- NEW: Best Bet & Insights Section ---
+        insight_frame = ttk.LabelFrame(tab_compare, text="💡 Best Bet & Actionable Insights", padding=10)
+        insight_frame.pack(fill="x", padx=10, pady=10)
+
+        # Best Bet Highlight
+        best_bet_container = ttk.Frame(insight_frame)
+        best_bet_container.pack(fill="x", pady=(0, 10))
+        
+        lbl_best = ttk.Label(best_bet_container, text="🏆 MODELLO CONSIGLIATO:", font=("Helvetica", 11, "bold"), foreground="#2c5282")
+        lbl_best.pack(side="left")
+        
+        self.lbl_best_model_name = ttk.Label(best_bet_container, textvariable=self.best_model_var, font=("Helvetica", 14, "bold"), foreground="#276749")
+        self.lbl_best_model_name.pack(side="left", padx=10)
+
+        # Recommendation Text Area
+        ttk.Label(insight_frame, text="✅ Raccomandazioni operative:", font=("Helvetica", 10, "bold")).pack(anchor="w")
+        self.txt_recommendation = tk.Text(insight_frame, height=4, wrap=tk.WORD, bg="#f0fff4", relief="flat", font=("Helvetica", 10))
+        self.txt_recommendation.pack(fill="x", pady=5)
+        self.txt_recommendation.insert(tk.END, "In attesa di elaborazione...")
+        self.txt_recommendation.configure(state="disabled")
+        # ----------------------------------------
+
+        ttk.Label(tab_compare, textvariable=self.best_detail_var, font=("Helvetica", 10, "italic"), foreground="#555").pack(pady=(2, 8))
 
         guide_text = ScrolledText(tab_guide, wrap=tk.WORD, height=20)
         guide_text.pack(fill="both", expand=True, padx=10, pady=10)
@@ -3223,7 +3250,43 @@ class ForecastGUI:
             best_from_metrics = self._best_model_name()
             self.best_model_var.set(best_from_metrics or "N/D")
 
-        self.best_detail_var.set(self._best_summary_text())
+        # --- NEW: Update Recommendation Text logic ---
+        self.txt_recommendation.configure(state="normal")
+        self.txt_recommendation.delete("1.0", tk.END)
+        
+        rec_text = "Nessuna raccomandazione disponibile."
+        
+        if self.backtest_metrics:
+            reliability = self._reliability_map()
+            if reliability:
+                best_overall = min(reliability, key=reliability.get)
+                best_mape = reliability[best_overall]
+                
+                # Logica semplice per raccomandazione
+                rec_text = f"Il modello '{best_overall.upper()}' è il più affidabile con un errore medio del {best_mape:.1f}%.\n"
+                
+                if best_mape < 5:
+                    rec_text += "✅ Affidabilità ECCELLENTE: Puoi usare questo forecast per pianificazione dettagliata."
+                elif best_mape < 10:
+                    rec_text += "⚠️ Affidabilità BUONA: Monitora i picchi, ma il trend è solido."
+                else:
+                    rec_text += "🔴 Affidabilità BASSA: Usa questo forecast con cautela, considera margine di sicurezza."
+                
+                # Check differenza orizzonti (se disponibile)
+                by_h = self.backtest_metrics.get(best_overall, {}).get('by_horizon', {})
+                if by_h:
+                    short_term = by_h.get('7 gg', {}).get('MAPE')
+                    long_term = by_h.get('60 gg', {}).get('MAPE')
+                    if short_term and long_term and (long_term > short_term * 1.5):
+                         rec_text += "\n💡 Nota: L'errore aumenta sul lungo periodo. Aggiorna il forecast ogni settimana."
+            else:
+                rec_text = "Metriche di backtest non valide."
+        else:
+            rec_text = "Esegui un forecast per vedere le raccomandazioni."
+
+        self.txt_recommendation.insert(tk.END, rec_text)
+        self.txt_recommendation.configure(state="disabled")
+        # ---------------------------------------------
 
         self.refresh_plots()
         self.refresh_comparisons()
@@ -3325,7 +3388,19 @@ class ForecastGUI:
         for _, row in long_df.iterrows():
             mape_val = reliability.get(row['modello'])
             mape_str = f"{mape_val:.2f}" if mape_val is not None else "-"
-            self.compare_tree.insert('', 'end', values=(row['PERIODO'], row['modello'], f"{row['forecast']:.1f}", mape_str))
+            
+            # --- NEW: Traffic Light Tag Assignment ---
+            tag = ''
+            if mape_val is not None:
+                if mape_val < 5.0:
+                    tag = 'green'
+                elif mape_val < 10.0:
+                    tag = 'yellow'
+                else:
+                    tag = 'red'
+            # -----------------------------------------
+
+            self.compare_tree.insert('', 'end', values=(row['PERIODO'], row['modello'], f"{row['forecast']:.1f}", mape_str), tags=(tag,))
 
         self._refresh_metric_tree()
         self._refresh_metric_horizon_tree()
