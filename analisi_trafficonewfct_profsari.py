@@ -2732,6 +2732,7 @@ class ForecastGUI:
         self.backtest_metrics = None
         self.log_queue = queue.Queue()
         self._log_polling = False
+        self._log_polling_forced_stop = False
         self._last_log_ts = None
         self._last_heartbeat_ts = None
         self._worker_thread = None
@@ -2757,6 +2758,9 @@ class ForecastGUI:
         self.period_var = tk.StringVar(value='giorno')
 
         self._build_layout()
+        # Avvia subito il polling della coda log per evitare corse tra thread
+        # e consentire di mostrare qualsiasi messaggio già emesso sul prompt.
+        self._ensure_log_polling()
 
     def _build_layout(self):
         header = ttk.Label(self.root, text=f"Forecast WFM - versione {SCRIPT_VERSION}", font=("Helvetica", 16, "bold"))
@@ -2888,14 +2892,21 @@ class ForecastGUI:
         if path:
             self.input_dir_var.set(path)
 
-    def _start_log_polling(self):
-        if self._log_polling:
+    def _ensure_log_polling(self):
+        """Mantiene attivo il polling della coda log in maniera resiliente."""
+        if self._log_polling_forced_stop:
             return
-        self._log_polling = True
-        self._poll_log_queue()
+        if not self._log_polling:
+            self._log_polling = True
+            self._poll_log_queue()
+
+    def _start_log_polling(self):
+        self._log_polling_forced_stop = False
+        self._ensure_log_polling()
 
     def _stop_log_polling(self):
         self._log_polling = False
+        self._log_polling_forced_stop = True
 
     def _poll_log_queue(self):
         while not self.log_queue.empty():
