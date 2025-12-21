@@ -605,7 +605,7 @@ def identifica_anomalie(df, output_dir):
 
     daily['ANOMALIA'] = 'Normale'
 
-    if SKLEARN_AVAILABLE:
+    if SKLEARN_AVAILABLE and not FAST_MODE:
         # Metodo Avanzato: Isolation Forest
         try:
             # Reshape per sklearn
@@ -2642,34 +2642,43 @@ def main(giorni_forecast=28, escludi_festivita=None, input_dirs=None, metodi=Non
     
     script_dir = os.path.dirname(os.path.abspath(__file__))
     risultati = []
-    
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = {}
-        for file_path in file_excel_list:
-            file_name = os.path.splitext(os.path.basename(file_path))[0]
-            output_dir = os.path.join(script_dir, "output", file_name)
-            
-            # Sottometti il task all'executor
-            # Nota: processa_singolo_file deve essere "picklable", essendo top-level lo è.
-            future = executor.submit(
-                processa_singolo_file,
-                file_path, 
-                output_dir, 
-                giorni_forecast, 
-                escludi_festivita, 
-                metodi
-            )
-            futures[future] = file_path
 
-        # Raccogli i risultati man mano che finiscono
-        for future in as_completed(futures):
-            path = futures[future]
-            try:
-                res = future.result()
-                risultati.append(res)
-            except Exception as e:
-                print(f"❌ Errore critico nel processo per {path}: {e}")
-                risultati.append({'file_path': path, 'success': False, 'error': str(e)})
+    # OTTIMIZZAZIONE: Se c'è solo un file, evita l'overhead del multiprocessing
+    if len(file_excel_list) == 1:
+        print("Elaborazione sequenziale (singolo file)...")
+        file_path = file_excel_list[0]
+        file_name = os.path.splitext(os.path.basename(file_path))[0]
+        output_dir = os.path.join(script_dir, "output", file_name)
+        res = processa_singolo_file(
+            file_path, output_dir, giorni_forecast, escludi_festivita, metodi
+        )
+        risultati.append(res)
+    else:
+        print(f"Avvio elaborazione parallela con {max_workers} processi...")
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            futures = {}
+            for file_path in file_excel_list:
+                file_name = os.path.splitext(os.path.basename(file_path))[0]
+                output_dir = os.path.join(script_dir, "output", file_name)
+                
+                future = executor.submit(
+                    processa_singolo_file,
+                    file_path, 
+                    output_dir, 
+                    giorni_forecast, 
+                    escludi_festivita, 
+                    metodi
+                )
+                futures[future] = file_path
+
+            for future in as_completed(futures):
+                path = futures[future]
+                try:
+                    res = future.result()
+                    risultati.append(res)
+                except Exception as exc:
+                    print(f"Errore generico nel worker per {path}: {exc}")
+                    risultati.append({'file_path': path, 'success': False, 'error': str(exc)})
 
     # Ordina risultati per nome file per coerenza
     risultati.sort(key=lambda x: os.path.basename(x.get('file_path', '')))
