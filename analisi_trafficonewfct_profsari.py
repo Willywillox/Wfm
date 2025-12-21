@@ -2735,6 +2735,9 @@ class ForecastGUI:
         self._last_log_ts = None
         self._last_heartbeat_ts = None
         self._worker_thread = None
+        self._buffer_sync_active = False
+        self._buffer_sync_ref = None
+        self._buffer_sync_len = 0
 
         self.run_button = None
         self.results_box = None
@@ -2967,10 +2970,13 @@ class ForecastGUI:
             daemon=True,
         )
         self._worker_thread = thread
+        # Avvia il sync del buffer locale per mostrare subito i log anche se la coda è vuota
+        self._start_buffer_sync()
         thread.start()
 
     def _run_batch(self, giorni, holidays, input_root, modelli):
         buffer = io.StringIO()
+        self._buffer_sync_ref = buffer
         # Duplica i log anche sullo stdout/stderr originale per visibilità da terminale
         log_writer = _GuiLogWriter(self.log_queue, buffer, mirror_stream=sys.stdout)
         queue_handler = _QueueLogHandler(self.log_queue)
@@ -3018,13 +3024,14 @@ class ForecastGUI:
             root_logger.setLevel(old_level)
 
         output_text = buffer.getvalue()
-        self.root.after(0, lambda: self._on_run_complete(risultati, output_text))
+        self.root.after(0, lambda: self._on_run_complete(risultati, output_text, buffer))
 
-    def _on_run_complete(self, risultati, output_text):
+    def _on_run_complete(self, risultati, output_text, buffer):
         self.run_button.config(state="normal")
         self._poll_log_queue()
         self._drain_log_queue()
         self._stop_heartbeat()
+        self._stop_buffer_sync(buffer)
         if output_text:
             self.log_widget.insert(tk.END, output_text)
         self.log_widget.see(tk.END)
@@ -3070,6 +3077,44 @@ class ForecastGUI:
         else:
             self.log_widget.insert(tk.END, "\n✅ Elaborazione completata. Riepilogo aggiornato.\n")
         self.log_widget.see(tk.END)
+
+    def _start_buffer_sync(self):
+        # Attiva la sincronizzazione periodica del buffer locale verso la GUI
+        if not self._worker_thread:
+            return
+        self._buffer_sync_active = True
+        self._buffer_sync_len = 0
+        self.root.after(200, self._sync_buffer_flush)
+
+    def _sync_buffer_flush(self):
+        if not self._buffer_sync_active or self._buffer_sync_ref is None:
+            return
+        try:
+            content = self._buffer_sync_ref.getvalue()
+            if len(content) > self._buffer_sync_len:
+                delta = content[self._buffer_sync_len:]
+                self.log_widget.insert(tk.END, delta)
+                self.log_widget.see(tk.END)
+                self._buffer_sync_len = len(content)
+        except Exception:
+            pass
+        if self._buffer_sync_active:
+            self.root.after(300, self._sync_buffer_flush)
+
+    def _stop_buffer_sync(self, buffer_ref=None):
+        if buffer_ref is not None:
+            self._buffer_sync_ref = buffer_ref
+        self._buffer_sync_active = False
+        if self._buffer_sync_ref is not None:
+            try:
+                content = self._buffer_sync_ref.getvalue()
+                if len(content) > self._buffer_sync_len:
+                    delta = content[self._buffer_sync_len:]
+                    self.log_widget.insert(tk.END, delta)
+                    self.log_widget.see(tk.END)
+                    self._buffer_sync_len = len(content)
+            except Exception:
+                pass
 
     def _drain_log_queue(self):
         # Assicura che nessun messaggio rimanga bloccato in coda quando si chiude il polling
