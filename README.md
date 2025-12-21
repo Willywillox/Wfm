@@ -46,6 +46,11 @@ Come attivarla:
 
 Nel banner iniziale vedrai la dicitura “Modalità veloce ATTIVA” quando il profilo rapido è abilitato.
 
+### Vedere dove si perde tempo
+Durante l’esecuzione troverai ora indicati i tempi di ogni step (es. "⏱️ Forecast multi-modello completato in 42.3s").
+- Se noti che un passo specifico è molto lento, abilita `--fast` oppure togli i modelli più pesanti dalla selezione (Prophet/TBATS).
+- Per capire l’impatto del backtest controlla le righe "Backtest orizzonte X giorni"; se servono solo le curve finali puoi saltare il backtest con `--fast` o ridurre l’orizzonte richiesto.
+
 ## Come valutare il modello migliore dal backtest
 Lo script salva un file con le metriche di backtest (es. `valutazione_forecast.xlsx`) dove ogni riga rappresenta uno split rolling. Le colonne più utili sono:
 - `HW_MAE/RMSE/MAPE`: errori del modello Holt-Winters (baseline stagionale/di trend).

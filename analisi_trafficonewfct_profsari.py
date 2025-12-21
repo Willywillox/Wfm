@@ -83,6 +83,11 @@ def log_debug(message: str):
     if VERBOSE:
         print(message)
 
+
+def _log_step_time(label: str, started_at: float):
+    elapsed = time.time() - started_at
+    print(f"   ⏱️ {label} completato in {elapsed:.1f}s")
+
 @contextmanager
 def safe_excel_writer(path, **kwargs):
     path = Path(path)
@@ -1083,6 +1088,7 @@ def _esegui_backtest(df, metodi, giorni_forecast, fast_mode=False):
     print("=" * 80)
     daily_series = df.groupby('DATA')['OFFERTO'].sum().sort_index()
 
+    t_backtest = time.time()
     base_horizons = [14, 30, 60, 90, giorni_forecast]
     max_windows = None
     if fast_mode:
@@ -1106,6 +1112,7 @@ def _esegui_backtest(df, metodi, giorni_forecast, fast_mode=False):
         metrics = {m: [] for m in metodi}
 
         windows_done = 0
+        t_horizon = time.time()
         for start_idx in range(min_train, len(dates) - horizon + 1, step):
             if max_windows and windows_done >= max_windows:
                 break
@@ -1137,6 +1144,7 @@ def _esegui_backtest(df, metodi, giorni_forecast, fast_mode=False):
             }
             valori_h = summary[metodo]['by_horizon'][horizon]
             print(f" - {metodo}: MAE={valori_h['MAE']:.2f}, MAPE={valori_h['MAPE']:.2f}%, SMAPE={valori_h['SMAPE']:.2f}%")
+        _log_step_time(f"Backtest orizzonte {horizon} giorni", t_horizon)
 
     # Calcola media complessiva per compatibilità
     for metodo, valori in summary.items():
@@ -1149,6 +1157,8 @@ def _esegui_backtest(df, metodi, giorni_forecast, fast_mode=False):
 
     if not summary:
         print("⚠️  Nessuna metrica calcolata (modelli non disponibili sui dati di train)")
+
+    _log_step_time("Backtest complessivo", t_backtest)
 
     return summary
 
@@ -2382,50 +2392,76 @@ def processa_singolo_file(file_path, output_dir, giorni_forecast=28, escludi_fes
     """
     try:
         os.makedirs(output_dir, exist_ok=True)
-        
+        t_file = time.time()
+
         print("\n" + "=" * 80)
         print("ANALISI COMPLETA TRAFFICO CALL CENTER")
         print("=" * 80)
         print(f"Giorni forecast: {giorni_forecast}")
         print()
-        
+
         print("\n[1/16] Caricamento dati...")
+        t_step = time.time()
         df = carica_dati(file_path)
+        _log_step_time("Caricamento dati", t_step)
 
         print("\n[2/16] Analisi fascia oraria...")
+        t_step = time.time()
         fascia_stats = analisi_fascia_oraria(df, output_dir)
+        _log_step_time("Analisi fascia oraria", t_step)
 
         print("\n[3/16] Analisi giorno settimana...")
+        t_step = time.time()
         giorno_stats = analisi_giorno_settimana(df, output_dir)
+        _log_step_time("Analisi giorno settimana", t_step)
 
         print("\n[4/16] Analisi settimana...")
+        t_step = time.time()
         week_stats = analisi_settimana(df, output_dir)
+        _log_step_time("Analisi settimana", t_step)
 
         print("\n[5/16] Analisi mese...")
+        t_step = time.time()
         mese_stats = analisi_mese(df, output_dir)
+        _log_step_time("Analisi mese", t_step)
 
         print("\n[6/16] Heatmap...")
+        t_step = time.time()
         crea_heatmap(df, output_dir)
+        _log_step_time("Heatmap", t_step)
 
         print("\n[7/16] Curve previsionali...")
+        t_step = time.time()
         curve = genera_curve_previsionali(df, output_dir)
+        _log_step_time("Curve previsionali", t_step)
 
         print("\n[8/16] Trend storico...")
+        t_step = time.time()
         daily_trend = analisi_consuntiva_trend(df, output_dir)
+        _log_step_time("Trend storico", t_step)
 
         print("\n[9/16] Confronto periodi...")
+        t_step = time.time()
         week_comp, month_comp = analisi_confronto_periodi(df, output_dir)
+        _log_step_time("Confronto periodi", t_step)
 
         print("\n[10/16] Anomalie...")
+        t_step = time.time()
         anomalie_alte, anomalie_basse = identifica_anomalie(df, output_dir)
+        _log_step_time("Anomalie", t_step)
 
         print("\n[11/16] KPI...")
+        t_step = time.time()
         kpi = dashboard_kpi_consuntivi(df, output_dir)
+        _log_step_time("KPI", t_step)
 
         print("\n[12/16] Valutazione forecast (backtest Holt-Winters)...")
+        t_step = time.time()
         valutazione = valuta_modelli_forecast(df, output_dir, giorni_forecast=giorni_forecast, fast_mode=FAST_MODE)
+        _log_step_time("Valutazione forecast", t_step)
 
         print("\n[13/16] Forecast multi-modello...")
+        t_step = time.time()
         forecast_modelli = genera_forecast_modelli(
             df,
             output_dir,
@@ -2434,24 +2470,32 @@ def processa_singolo_file(file_path, output_dir, giorni_forecast=28, escludi_fes
             escludi_festivita=escludi_festivita,
             fast_mode=FAST_MODE
         )
+        _log_step_time("Forecast multi-modello", t_step)
         forecast_completo = forecast_modelli.get('holtwinters')
         if forecast_completo is None:
             # usa il primo disponibile come fallback per i passi successivi
             forecast_completo = next(iter(forecast_modelli.values()))
 
         print("\n[14/16] Report statistico...")
+        t_step = time.time()
         genera_report_statistico(df, fascia_stats, giorno_stats, week_stats, mese_stats, week_comp, month_comp, anomalie_alte, anomalie_basse, kpi, output_dir)
+        _log_step_time("Report statistico", t_step)
 
         print("\n[15/16] Dashboard Excel...")
+        t_step = time.time()
         excel_path = crea_dashboard_excel(df, fascia_stats, giorno_stats, week_stats, mese_stats, curve, forecast_completo['giornaliero'], kpi, output_dir)
+        _log_step_time("Dashboard Excel", t_step)
 
         print("\n[16/16] Report finale...")
+        t_step = time.time()
         genera_report_finale(df, kpi, forecast_completo['giornaliero'], output_dir)
-        
+        _log_step_time("Report finale", t_step)
+
         print("\n" + "=" * 80)
         print("✅ FILE COMPLETATO!")
         print("=" * 80)
         print(f"File salvati in: {output_dir}")
+        _log_step_time("Elaborazione file", t_file)
 
         return {
             'file_path': file_path,
