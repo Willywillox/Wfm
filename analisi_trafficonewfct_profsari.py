@@ -65,6 +65,7 @@ from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 import time
 warnings.filterwarnings('ignore')
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 # Parametri globali per IC basate su quantili dei residui
 DEFAULT_ALPHA = 0.10  # 80% central interval by default
@@ -152,6 +153,7 @@ def _fmt(val):
 try:
     from sklearn.cluster import KMeans
     from sklearn.preprocessing import StandardScaler
+    from sklearn.ensemble import IsolationForest
     SKLEARN_AVAILABLE = True
 except ImportError:
     SKLEARN_AVAILABLE = False
@@ -602,8 +604,33 @@ def identifica_anomalie(df, output_dir):
     soglia_bassa = media - 2 * std
 
     daily['ANOMALIA'] = 'Normale'
-    daily.loc[daily['TOTALE'] > soglia_alta, 'ANOMALIA'] = 'Picco Alto'
-    daily.loc[daily['TOTALE'] < soglia_bassa, 'ANOMALIA'] = 'Picco Basso'
+
+    if SKLEARN_AVAILABLE:
+        # Metodo Avanzato: Isolation Forest
+        try:
+            # Reshape per sklearn
+            X = daily['TOTALE'].values.reshape(-1, 1)
+            # Contamination stima la % di outlier (es. 5%)
+            iso = IsolationForest(contamination=0.05, random_state=42)
+            preds = iso.fit_predict(X)
+            # -1 sono anomalie, 1 sono normali
+            daily.loc[preds == -1, 'ANOMALIA'] = 'Anomalia'
+            
+            # Distinguiamo Alto/Basso in base alla media
+            mask_anom = daily['ANOMALIA'] == 'Anomalia'
+            daily.loc[mask_anom & (daily['TOTALE'] > media), 'ANOMALIA'] = 'Picco Alto'
+            daily.loc[mask_anom & (daily['TOTALE'] < media), 'ANOMALIA'] = 'Picco Basso'
+            
+            print("   ✅ Isolation Forest applicato per rilevamento anomalie")
+        except Exception as e:
+            print(f"   ⚠️ Errore Isolation Forest: {e}, uso metodo statistico standard")
+            # Fallback al metodo statistico
+            daily.loc[daily['TOTALE'] > soglia_alta, 'ANOMALIA'] = 'Picco Alto'
+            daily.loc[daily['TOTALE'] < soglia_bassa, 'ANOMALIA'] = 'Picco Basso'
+    else:
+        # Metodo statistico standard (Mean +/- 2*Std)
+        daily.loc[daily['TOTALE'] > soglia_alta, 'ANOMALIA'] = 'Picco Alto'
+        daily.loc[daily['TOTALE'] < soglia_bassa, 'ANOMALIA'] = 'Picco Basso'
 
     anomalie_alte = daily[daily['ANOMALIA'] == 'Picco Alto'].sort_values('TOTALE', ascending=False)
     anomalie_basse = daily[daily['ANOMALIA'] == 'Picco Basso'].sort_values('TOTALE')
@@ -1870,6 +1897,51 @@ def _salva_forecast_completo(output_dir, confronto_df, backtest_metrics, best_mo
     return actual_path
 
 
+def _calcola_ensemble_pesato(confronto_df, modelli, backtest_metrics):
+    """Calcola una media pesata dei modelli basata sull'inverso del MAPE."""
+    weights = {}
+    valid_models = []
+    
+    if not backtest_metrics:
+        return confronto_df[modelli].mean(axis=1)
+
+    for m in modelli:
+        metriche = backtest_metrics.get(m)
+        if not metriche:
+            continue
+        
+        # Cerca il miglior MAPE disponibile (globale o per orizzonte)
+        mape = metriche.get('MAPE')
+        if mape is None or not np.isfinite(mape):
+             # Prova a cercare nei dettagli per orizzonte
+             by_hor = metriche.get('by_horizon', {})
+             if by_hor:
+                 # Prende il MAPE medio tra gli orizzonti o il minimo
+                 mapes = [v['MAPE'] for v in by_hor.values() if np.isfinite(v.get('MAPE', np.inf))]
+                 if mapes:
+                     mape = np.mean(mapes)
+        
+        if mape is not None and np.isfinite(mape) and mape > 0:
+            weights[m] = 1 / mape  # Più basso è l'errore, più alto il peso
+            valid_models.append(m)
+        else:
+             # Se MAPE è 0 (improbabile) o nan, diamo peso medio
+             weights[m] = 0
+    
+    if not valid_models:
+        return confronto_df[modelli].mean(axis=1)
+    
+    total_weight = sum(weights[m] for m in valid_models)
+    if total_weight == 0:
+        return confronto_df[modelli].mean(axis=1)
+        
+    weighted_sum = 0
+    for m in valid_models:
+        norm_weight = weights[m] / total_weight
+        weighted_sum += confronto_df[m] * norm_weight
+        
+    return weighted_sum
+
 def genera_forecast_modelli(df, output_dir, giorni_forecast=28, metodi=None, escludi_festivita=None, fast_mode=False):
     """
     Esegue più modelli di forecast in parallelo e produce un confronto.
@@ -1991,7 +2063,9 @@ def genera_forecast_modelli(df, output_dir, giorni_forecast=28, metodi=None, esc
             best_model = _scegli_miglior_modello(backtest_metrics, available_models)
             ensemble_models = _seleziona_top_modelli(backtest_metrics, available_models, top_k=2)
             if len(ensemble_models) >= 2:
-                confronto['ensemble_top2'] = confronto[ensemble_models].mean(axis=1)
+                # Confronto['ensemble_top2'] = confronto[ensemble_models].mean(axis=1)
+                # Sostituito con media pesata
+                confronto['ensemble_top2'] = _calcola_ensemble_pesato(confronto, ensemble_models, backtest_metrics)
                 available_models.append('ensemble_top2')
                 stati_modelli.append({
                     'metodo': 'ensemble_top2',
@@ -2555,25 +2629,52 @@ def main(giorni_forecast=28, escludi_festivita=None, input_dirs=None, metodi=Non
         print("❌ Nessun file Excel trovato!")
         return []
 
-    # Prepara risultati
-    risultati = []
+    print(f"Trovati {len(file_excel_list)} file da elaborare.")
+    
+    # Determina numero di worker (max CPU - 1 per lasciare respiro al sistema, min 1)
+    import multiprocessing
+    max_workers = max(1, multiprocessing.cpu_count() - 1)
+    
+    # Se abbiamo pochi file, non serve sprecare risorse in troppi processi
+    max_workers = min(max_workers, len(file_excel_list))
+    
+    print(f"Avvio elaborazione parallela con {max_workers} processi...")
+    
     script_dir = os.path.dirname(os.path.abspath(__file__))
+    risultati = []
+    
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = {}
+        for file_path in file_excel_list:
+            file_name = os.path.splitext(os.path.basename(file_path))[0]
+            output_dir = os.path.join(script_dir, "output", file_name)
+            
+            # Sottometti il task all'executor
+            # Nota: processa_singolo_file deve essere "picklable", essendo top-level lo è.
+            future = executor.submit(
+                processa_singolo_file,
+                file_path, 
+                output_dir, 
+                giorni_forecast, 
+                escludi_festivita, 
+                metodi
+            )
+            futures[future] = file_path
 
-    # Processa ogni file
-    for i, file_path in enumerate(file_excel_list, 1):
-        file_name = os.path.basename(file_path)
-        file_stem = os.path.splitext(file_name)[0]  # Nome senza estensione
+        # Raccogli i risultati man mano che finiscono
+        for future in as_completed(futures):
+            path = futures[future]
+            try:
+                res = future.result()
+                risultati.append(res)
+            except Exception as e:
+                print(f"❌ Errore critico nel processo per {path}: {e}")
+                risultati.append({'file_path': path, 'success': False, 'error': str(e)})
 
-        print(f"\n{'='*80}")
-        print(f"📁 PROCESSING FILE {i}/{len(file_excel_list)}: {file_name}")
-        print(f"{'='*80}")
-
-        # Crea cartella output specifica per questo file
-        output_dir = os.path.join(script_dir, 'output', file_stem)
-
-        # Processa il file
-        risultato = processa_singolo_file(file_path, output_dir, giorni_forecast, escludi_festivita, metodi)
-        risultati.append(risultato)
+    # Ordina risultati per nome file per coerenza
+    risultati.sort(key=lambda x: os.path.basename(x.get('file_path', '')))
+    
+    # Genera report riassuntivo finale
 
     # Genera report riassuntivo finale
     print(f"\n{'='*80}")
@@ -3372,10 +3473,24 @@ class ForecastGUI:
 
 
 if __name__ == "__main__":
-    if "--gui" in sys.argv or os.environ.get("FORECAST_GUI") == "1":
+    import argparse
+    parser = argparse.ArgumentParser(description='Analisi Traffico WFM')
+    parser.add_argument('--input-dir', type=str, help='Cartella con file Excel di input', default=None)
+    parser.add_argument('--fast', action='store_true', help='Modalità veloce')
+    parser.add_argument('--gui', action='store_true', help='Avvia interfaccia grafica')
+    args, unknown = parser.parse_known_args()
+
+    # Aggiorna variabili globali in base agli argomenti
+    if args.fast:
+        FAST_MODE = True
+        os.environ["FORECAST_FAST"] = "1"
+    
+    if args.gui or os.environ.get("FORECAST_GUI") == "1":
         gui = ForecastGUI()
         gui.run()
         sys.exit(0)
+
+    input_dirs_cli = [args.input_dir] if args.input_dir else None
 
     print("\n" + "=" * 80)
     print(f"SCRIPT AGGIORNATO: versione {SCRIPT_VERSION} (ultimo update: {LAST_UPDATE})")
@@ -3463,7 +3578,8 @@ if __name__ == "__main__":
     risultati = main(
         giorni_forecast=GIORNI_FORECAST,
         escludi_festivita=ESCLUDI_FESTIVITA,
-        metodi=METODI_DA_ESEGUIRE
+        metodi=METODI_DA_ESEGUIRE,
+        input_dirs=input_dirs_cli
     )
     
     print("\n" + "=" * 80)
