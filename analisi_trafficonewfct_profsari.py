@@ -134,10 +134,16 @@ def _interval_from_residuals(residuals, forecast_values, alpha=DEFAULT_ALPHA):
 
 
 def _fmt(val):
-    if val is None or (isinstance(val, float) and np.isnan(val)):
+    if val is None:
         return "-"
     try:
-        return f"{float(val):.2f}"
+        float_val = float(val)
+    except Exception:
+        return str(val)
+    if not np.isfinite(float_val):
+        return "-"
+    try:
+        return f"{float_val:.2f}"
     except Exception:
         return str(val)
 
@@ -3111,9 +3117,10 @@ class ForecastGUI:
                 best_models.append(r['miglior_modello'])
 
         if best_models:
-            self.best_model_var.set(", ".join(sorted(set(best_models))) )
+            self.best_model_var.set(", ".join(sorted(set(best_models))))
         else:
-            self.best_model_var.set("N/D")
+            best_from_metrics = self._best_model_name()
+            self.best_model_var.set(best_from_metrics or "N/D")
 
         self.best_detail_var.set(self._best_summary_text())
 
@@ -3227,14 +3234,22 @@ class ForecastGUI:
             return {}
         mapping = {}
         for modello, vals in self.backtest_metrics.items():
-            if 'MAPE' in vals and vals['MAPE'] is not None:
-                mapping[modello] = vals['MAPE']
+            mape_val = vals.get('MAPE')
+            if mape_val is None or not np.isfinite(mape_val):
+                horizons = vals.get('by_horizon', {})
+                if horizons:
+                    best_h = min(horizons, key=lambda h: horizons[h].get('MAPE', np.inf))
+                    mape_val = horizons[best_h].get('MAPE')
+            if mape_val is None or not np.isfinite(mape_val):
                 continue
-            horizons = vals.get('by_horizon', {})
-            if horizons:
-                best_h = min(horizons, key=lambda h: horizons[h].get('MAPE', np.inf))
-                mapping[modello] = horizons[best_h].get('MAPE')
+            mapping[modello] = float(mape_val)
         return mapping
+
+    def _best_model_name(self):
+        reliability = self._reliability_map()
+        if not reliability:
+            return None
+        return min(reliability, key=reliability.get)
 
     def _refresh_metric_tree(self):
         for item in self.metric_tree.get_children():
@@ -3272,7 +3287,7 @@ class ForecastGUI:
             return "Miglior modello: N/D (nessuna metrica disponibile)"
         reliability = self._reliability_map()
         if not reliability:
-            return "Miglior modello: N/D (nessuna MAPE calcolata)"
+            return "Miglior modello: N/D (MAPE non calcolata o infinita)"
         best_model = min(reliability, key=reliability.get)
         best_mape = reliability[best_model]
         horizon = None
