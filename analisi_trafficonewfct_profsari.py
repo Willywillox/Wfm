@@ -41,6 +41,7 @@ SCRIPT_VERSION = "2.3.0"
 LAST_UPDATE = "2025-11-23"
 
 import logging
+import math
 import matplotlib
 matplotlib.use("Agg")
 import pandas as pd
@@ -1876,7 +1877,7 @@ def genera_forecast_modelli(df, output_dir, giorni_forecast=28, metodi=None, esc
         escludi_festivita: lista festività da escludere da Prophet (es. ['Natale'] se apri quando prima eri chiuso)
     """
     if fast_mode:
-        print("   ⚡ Modalità veloce: eseguo solo modelli rapidi e TBATS senza grafici")
+        print("   ⚡ Modalita veloce (fast mode): eseguo solo modelli rapidi e TBATS senza grafici")
     if metodi is None:
         if fast_mode:
             metodi = ('holtwinters', 'naive', 'pattern', 'intraday_dinamico')
@@ -2799,7 +2800,7 @@ class ForecastGUI:
 
         ttk.Checkbutton(
             form_frame,
-            text="Modalità veloce (--fast)",
+            text="Modalita veloce (--fast)",
             variable=self.fast_mode_var
         ).grid(row=5, column=0, sticky="w")
 
@@ -2993,7 +2994,7 @@ class ForecastGUI:
         self.log_widget.insert(tk.END, f"  Giorni forecast: {giorni}\n")
         self.log_widget.insert(tk.END, f"  Modelli selezionati: {', '.join(selected_models)}\n")
         if self.fast_mode_var.get():
-            self.log_widget.insert(tk.END, "  Modalità veloce: ON (modelli leggeri e backtest ridotto)\n")
+            self.log_widget.insert(tk.END, "  Modalita veloce (fast mode): ON (modelli leggeri e backtest ridotto)\n")
         if holidays_list:
             self.log_widget.insert(tk.END, f"  Festività escluse: {', '.join(holidays_list)}\n")
         self.log_widget.insert(tk.END, "  Log in tempo reale qui sotto...\n\n")
@@ -3336,9 +3337,20 @@ class ForecastGUI:
             messagebox.showerror("Errore apertura grafico", str(exc))
             return
 
+        max_w, max_h = 900, 520
+        w, h = img.width(), img.height()
+        scale = max(w / max_w, h / max_h, 1)
+        displayed_w, displayed_h = w, h
+        if scale > 1:
+            factor = int(math.ceil(scale))
+            img = img.subsample(factor, factor)
+            displayed_w = max(1, w // factor)
+            displayed_h = max(1, h // factor)
+
         self.current_image = img
         self.image_label.configure(image=img)
-        self.image_caption.configure(text=os.path.basename(path))
+        caption = f"{os.path.basename(path)}  ({displayed_w}x{displayed_h} px visualizzati)"
+        self.image_caption.configure(text=caption)
 
     def run(self):
         self.root.mainloop()
@@ -3426,7 +3438,7 @@ if __name__ == "__main__":
     print(f"    Equivalente a: {GIORNI_FORECAST/7:.1f} settimane")
     print(f"    Equivalente a: {GIORNI_FORECAST/30:.1f} mesi circa")
     if FAST_MODE:
-        print("    Modalità veloce ATTIVA: modelli leggeri e backtest ridotto")
+        print("    Modalita veloce ATTIVA (fast mode): modelli leggeri e backtest ridotto")
     print("=" * 80 + "\n")
     
     # Esegui batch processing CON I PARAMETRI CORRETTI
