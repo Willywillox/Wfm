@@ -20,7 +20,7 @@ import unicodedata
 from pathlib import Path
 import re
 import datetime as _dt
-from collections import defaultdict
+from collections import defaultdict, Counter
 import math
 from typing import Dict, Optional, Set, Tuple
 import pandas as pd
@@ -86,6 +86,40 @@ def _parse_rest_count_cell(val) -> int:
         return 2
     n = int(m.group(1))
     return int(max(0, min(7, n)))
+
+
+def _parse_weekly_hours_pattern(val) -> Optional[list[int]]:
+    if pd.isna(val):
+        return None
+    if isinstance(val, (int, float)):
+        v = float(val)
+        return [int(round(v * 60))] if v > 0 else None
+    s = str(val).strip()
+    if not s:
+        return None
+    tokens = re.split(r"[-_/;\s]+", s)
+    hours: list[int] = []
+    for tok in tokens:
+        if not tok:
+            continue
+        try:
+            v = float(tok.replace(',', '.'))
+        except ValueError:
+            continue
+        if v <= 0:
+            continue
+        hours.append(int(round(v * 60)))
+    return hours or None
+
+
+def _parse_positive_int(val) -> int:
+    if pd.isna(val):
+        return 0
+    try:
+        num = int(round(float(str(val).replace(',', '.'))))
+        return max(0, num)
+    except Exception:
+        return 0
 
 
 def _normalize(s: str) -> str:
@@ -381,12 +415,28 @@ def prepara_req(req: pd.DataFrame) -> pd.DataFrame:
 
 
 def infer_personal_params_from_risorse(ris: pd.DataFrame):
+    """
+    Estrae i parametri personali dal foglio "Risorse", incluse le combinazioni
+    settimanali di ore/giorno (colonna Q) e il numero di giorni consentiti fuori
+    fascia (colonna R), trasformandoli in vincoli utilizzabili durante la
+    generazione dei turni.
+
+    Restituisce durate base, riposi target, straordinari disponibili, flag di
+    spezzamento OT, straordinari per giorno, pattern di durata e budget
+    "fuori fascia" per ciascun dipendente.
+    """
     if ris.shape[1] < 4:
         raise ValueError("Il foglio 'Risorse' deve avere almeno 4 colonne: A,B,C(ore/giorno),D(riposi/settimana).")
     hours_col = ris.columns[2]  # C
     rests_col = ris.columns[3]  # D
     ot_disp_col = _find_col(ris, 'OT disp')
     ot_split_col = _find_col(ris, 'OT spezz')
+    pattern_col = _find_col(ris, 'combinazione')
+    if pattern_col is None and len(ris.columns) >= 17:
+        pattern_col = ris.columns[16]  # Colonna Q
+    flex_col = _find_col(ris, 'fuori fascia')
+    if flex_col is None and len(ris.columns) >= 18:
+        flex_col = ris.columns[17]  # Colonna R
     ot_day_labels = {
         'Lun': 'OT lun',
         'Mar': 'OT mar',
@@ -410,12 +460,23 @@ def infer_personal_params_from_risorse(ris: pd.DataFrame):
     ot_minutes_by_emp = {}
     ot_split_by_emp = {}
     ot_daily_minutes_by_emp = {}
+    duration_patterns_by_emp: Dict[str, list[int]] = {}
+    out_of_range_allowance_by_emp: Dict[str, int] = {}
 
     for _, row in ris.iterrows():
         emp = row['id dipendente']
         ore = _parse_hours_cell(row[hours_col])
-        durations_by_emp[emp] = int(round(ore * 60))
+        base_duration = int(round(ore * 60))
+        pattern_val = row.get(pattern_col) if pattern_col is not None else None
+        pattern_hours = _parse_weekly_hours_pattern(pattern_val)
+        if pattern_hours:
+            duration_patterns_by_emp[emp] = pattern_hours
+            base_duration = pattern_hours[0]
+        durations_by_emp[emp] = base_duration
         rest_target_by_emp[emp] = _parse_rest_count_cell(row[rests_col])
+
+        flex_val = row.get(flex_col) if flex_col is not None else None
+        out_of_range_allowance_by_emp[emp] = _parse_positive_int(flex_val)
 
         raw_ot = row.get(ot_disp_col) if ot_disp_col else None
         ot_minutes = 0
@@ -453,7 +514,15 @@ def infer_personal_params_from_risorse(ris: pd.DataFrame):
             split_flag = normalized in {'ok'}
         ot_split_by_emp[emp] = split_flag
 
-    return durations_by_emp, rest_target_by_emp, ot_minutes_by_emp, ot_split_by_emp, ot_daily_minutes_by_emp
+    return (
+        durations_by_emp,
+        rest_target_by_emp,
+        ot_minutes_by_emp,
+        ot_split_by_emp,
+        ot_daily_minutes_by_emp,
+        duration_patterns_by_emp,
+        out_of_range_allowance_by_emp,
+    )
 def genera_turni_candidati(req_pre: pd.DataFrame, durations_set_min: set, grid_step_min: int, 
                           force_phase_minutes=None) -> pd.DataFrame:
     """
@@ -487,7 +556,13 @@ def genera_turni_candidati(req_pre: pd.DataFrame, durations_set_min: set, grid_s
     return pd.DataFrame(rows)
 
 
-def determina_turni_ammissibili(ris: pd.DataFrame, turni_cand: pd.DataFrame, durations_by_emp: dict):
+def determina_turni_ammissibili(
+    ris: pd.DataFrame,
+    turni_cand: pd.DataFrame,
+    durations_by_emp: dict,
+    allowed_durations_by_emp: Optional[Dict[str, Set[int]]] = None,
+    out_of_range_allowance_by_emp: Optional[Dict[str, int]] = None,
+):
     fin_col = _find_col(ris, 'Fine fascia')
     ini_col = _find_col(ris, 'Inizio fascia')
     if fin_col is None:
@@ -501,16 +576,29 @@ def determina_turni_ammissibili(ris: pd.DataFrame, turni_cand: pd.DataFrame, dur
         for _, row in ris.iterrows()
     }
     shift_by_emp = {}
+    shift_out_of_range = {}
+    allowed_durations_by_emp = allowed_durations_by_emp or {}
+    out_of_range_allowance_by_emp = out_of_range_allowance_by_emp or {}
     for emp in ris['id dipendente']:
         smin = avail_ini_min.get(emp, 0)
         emin = avail_end_min.get(emp, 24*60)
-        d_req = durations_by_emp.get(emp, 240)
+        durations_allowed = allowed_durations_by_emp.get(emp, {durations_by_emp.get(emp, 240)})
+        include_outside = out_of_range_allowance_by_emp.get(emp, 0) > 0
         shift_by_emp[emp] = [
             row['id turno']
             for _, row in turni_cand.iterrows()
-            if row['start_min'] >= smin and row['end_min'] <= emin and int(row['durata_min']) == int(d_req)
+            if (
+                (include_outside or (row['start_min'] >= smin and row['end_min'] <= emin))
+                and int(row['durata_min']) in {int(d) for d in durations_allowed}
+            )
         ]
-    return shift_by_emp
+        for _, row in turni_cand.iterrows():
+            turno_id = row['id turno']
+            if turno_id not in shift_by_emp[emp]:
+                continue
+            inside = row['start_min'] >= smin and row['end_min'] <= emin
+            shift_out_of_range[(emp, turno_id)] = not inside
+    return shift_by_emp, shift_out_of_range, avail_ini_min, avail_end_min
 
 
 def compute_slot_size(req_pre: pd.DataFrame) -> int:
@@ -558,10 +646,16 @@ def leggi_vincoli_weekend(ris: pd.DataFrame):
 
 # ----------------------------- Algoritmo ottimizzato v5.0 -----------------------------
 
-def compute_tight_capacity_targets(req_pre: pd.DataFrame, ris: pd.DataFrame, durations_by_emp: dict,
-                                   rest_target_by_emp: dict, forced_off: dict,
-                                   overcap_percent_map: Dict[str, float],
-                                   overcap_penalty_map: Dict[str, float]):
+def compute_tight_capacity_targets(
+    req_pre: pd.DataFrame,
+    ris: pd.DataFrame,
+    durations_by_emp: dict,
+    rest_target_by_emp: dict,
+    forced_off: dict,
+    overcap_percent_map: Dict[str, float],
+    overcap_penalty_map: Dict[str, float],
+    duration_patterns_by_emp: Optional[Dict[str, list[int]]] = None,
+):
     """Calcola domanda, disponibilita' e vincoli giornalieri."""
     giorni = ['Lun','Mar','Mer','Gio','Ven','Sab','Dom']
     day_colmap = map_req_day_columns(req_pre)
@@ -578,7 +672,8 @@ def compute_tight_capacity_targets(req_pre: pd.DataFrame, ris: pd.DataFrame, dur
     for g in giorni:
         col = day_colmap.get(g)
         if col and col in req_pre.columns:
-            day_demand = float(req_pre[col].sum())
+            col_series = pd.to_numeric(req_pre[col], errors='coerce').fillna(0.0)
+            day_demand = float(col_series.sum())
             demand_by_day[g] = day_demand
             total_demand += day_demand
 
@@ -587,7 +682,7 @@ def compute_tight_capacity_targets(req_pre: pd.DataFrame, ris: pd.DataFrame, dur
                 min_demand_start[g] = 24 * 60
                 max_demand_end[g] = 0
             else:
-                fasce_con_domanda = req_pre[req_pre[col] > 0]
+                fasce_con_domanda = req_pre[col_series > 0]
                 if not fasce_con_domanda.empty:
                     min_demand_start[g] = int(fasce_con_domanda['start_min'].min())
                     max_demand_end[g] = int(fasce_con_domanda['end_min'].max())
@@ -596,7 +691,7 @@ def compute_tight_capacity_targets(req_pre: pd.DataFrame, ris: pd.DataFrame, dur
                     max_demand_end[g] = 0
 
             for i, slot in enumerate(slot_list):
-                demand_by_slot[g][slot] = float(req_pre.loc[i, col])
+                demand_by_slot[g][slot] = float(col_series.iat[i]) if i < len(col_series) else 0.0
         else:
             demand_by_day[g] = 0.0
             zero_demand_days.add(g)
@@ -607,15 +702,19 @@ def compute_tight_capacity_targets(req_pre: pd.DataFrame, ris: pd.DataFrame, dur
 
     total_capacity_slots = 0.0
     emp_work_days = {}
+    patterns = duration_patterns_by_emp or {}
     for emp in ris['id dipendente']:
         target_rest = int(rest_target_by_emp.get(emp, 2))
         forced = len(forced_off.get(emp, set()))
         if forced > target_rest:
             raise ValueError(f"Vincoli incoerenti per {emp}: riposi richiesti={target_rest}, ma giorni forzati OFF={forced}.")
-        work_days = max(0, 7 - target_rest)
+        work_days = len(patterns[emp]) if emp in patterns else max(0, 7 - target_rest)
         emp_work_days[emp] = work_days
-        slots_per_shift = durations_by_emp.get(emp, 240) / slot_size
-        total_capacity_slots += work_days * slots_per_shift
+        if emp in patterns:
+            total_capacity_slots += sum(d / slot_size for d in patterns[emp])
+        else:
+            slots_per_shift = durations_by_emp.get(emp, 240) / slot_size
+            total_capacity_slots += work_days * slots_per_shift
 
     overcapacity_ratio = (total_capacity_slots - total_demand) / total_demand if total_demand > 0 else 0.0
 
@@ -672,12 +771,15 @@ def assegnazione_tight_capacity(
     ot_split_by_emp: dict,
     ot_daily_minutes_by_emp: dict,
     allow_ot_overcap: bool = False,
-    prefer_phases=(15,
-    45),
+    prefer_phases=(15, 45),
     strict_phase=False,
     force_balance: bool = False,
     overcap_percent_map: Optional[Dict[str, float]] = None,
-    overcap_penalty_map: Optional[Dict[str, float]] = None
+    overcap_penalty_map: Optional[Dict[str, float]] = None,
+    duration_patterns_by_emp: Optional[Dict[str, list[int]]] = None,
+    allowed_durations_by_emp: Optional[Dict[str, Set[int]]] = None,
+    shift_out_of_range: Optional[Dict[Tuple[str, str], bool]] = None,
+    out_of_range_allowance_by_emp: Optional[Dict[str, int]] = None,
 ):
     '''Assegna i turni rispettando domanda, riposi contrattuali e privilegiando i minuti preferiti.'''
     giorni = ['Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab', 'Dom']
@@ -686,8 +788,16 @@ def assegnazione_tight_capacity(
     penalty_map = dict(overcap_penalty_map) if overcap_penalty_map else dict(DAY_OVERCAP_PENALTY)
     forced_records: Set[Tuple[str, str]] = set()
 
-    targets = compute_tight_capacity_targets(req, ris, durations_by_emp, rest_target_by_emp, forced_off,
-                                             percent_map, penalty_map)
+    targets = compute_tight_capacity_targets(
+        req,
+        ris,
+        durations_by_emp,
+        rest_target_by_emp,
+        forced_off,
+        percent_map,
+        penalty_map,
+        duration_patterns_by_emp,
+    )
     demand_by_slot = targets['demand_by_slot']
     demand_by_day = targets['demand_by_day']
     total_demand = targets['total_demand']
@@ -703,7 +813,13 @@ def assegnazione_tight_capacity(
     min_demand_start = targets['min_demand_start']
     max_demand_end = targets['max_demand_end']
 
-    slot_coverage = max(1, int(round(next(iter(durations_by_emp.values())) / slot_size)))
+    duration_patterns_by_emp = duration_patterns_by_emp or {}
+    allowed_durations_by_emp = allowed_durations_by_emp or {
+        emp: {durations_by_emp.get(emp, 240)} for emp in ris['id dipendente']
+    }
+    all_durations = sorted({dur for durs in allowed_durations_by_emp.values() for dur in durs})
+    typical_duration = all_durations[0] if all_durations else next(iter(durations_by_emp.values()))
+    slot_coverage = max(1, int(round(typical_duration / slot_size)))
     dom_demand = demand_by_day.get('Dom', 0.0)
     if dom_demand > 0:
         dom_needed = int((dom_demand + slot_coverage - 1) // slot_coverage)
@@ -745,11 +861,28 @@ def assegnazione_tight_capacity(
             # Turno continuo: logica originale
             shift_slots[turno_id] = [s for s in slot_list if row['start_min'] <= s < row['end_min']]
 
+    shift_out_of_range = shift_out_of_range or {}
+    out_of_range_allowance_by_emp = out_of_range_allowance_by_emp or {}
+
     assignment_details = {}
 
     days_done = {emp: 0 for emp in ris['id dipendente']}
     work_need = emp_work_days.copy()
     forced_off = {emp: set(days) for emp, days in forced_off.items()}
+    remaining_duration_counts: Dict[str, Counter] = {}
+    for emp in ris['id dipendente']:
+        pattern = duration_patterns_by_emp.get(emp)
+        if pattern:
+            # Il pattern non impone l'ordine dei giorni: qui memorizziamo solo quante
+            # volte va usata ciascuna durata (es. un 5h e quattro 4h), mentre la
+            # scelta di quando usarla avverrà più avanti in base ai gap di domanda
+            # e ai punteggi di turno.
+            remaining_duration_counts[emp] = Counter(pattern)
+        else:
+            remaining_duration_counts[emp] = Counter({durations_by_emp.get(emp, 240): work_need.get(emp, 0)})
+    expected_duration_counts = {emp: counts.copy() for emp, counts in remaining_duration_counts.items()}
+    out_of_range_allowance = {emp: int(out_of_range_allowance_by_emp.get(emp, 0)) for emp in ris['id dipendente']}
+    out_of_range_used = defaultdict(int)
 
     for emp in ris['id dipendente']:
         for day in zero_demand_days:
@@ -842,6 +975,14 @@ def assegnazione_tight_capacity(
                 base = -500.0  # Aumentato da -60
         return base * capacity_factor
 
+    def can_use_shift(emp: str, sid: str) -> bool:
+        duration = int(shift_duration_min.get(sid, shift_end_min[sid] - shift_start_min[sid]))
+        if remaining_duration_counts.get(emp, Counter()).get(duration, 0) <= 0:
+            return False
+        if shift_out_of_range.get((emp, sid), False):
+            return out_of_range_used[emp] < out_of_range_allowance.get(emp, 0)
+        return True
+
     def shift_value(emp: str, day: str, sid: str, allow_overcapacity: bool = False, force_any: bool = False) -> float:
         if day in zero_demand_days and not force_any:
             return -1e4
@@ -857,6 +998,11 @@ def assegnazione_tight_capacity(
         # Questo impedisce che turni tipo 16:45-20:45 vengano selezionati quando ci sono requisiti fino alle 21:00
         mde = max_demand_end.get(day, 24 * 60)
         score = 0.0
+        if shift_out_of_range.get((emp, sid), False):
+            remaining_flex = out_of_range_allowance.get(emp, 0) - out_of_range_used.get(emp, 0)
+            if remaining_flex <= 0 and not force_any:
+                return -1e4
+            score -= 140.0
         if not force_any and mde < 24 * 60:
             if en >= mde:
                 score += 90.0  # piccolo bonus per chi copre l'ultima fascia
@@ -919,6 +1065,16 @@ def assegnazione_tight_capacity(
             infeasible.append((emp, error_msg))
             return  # NON assegnare
 
+        duration_needed = int(shift_duration_min.get(sid, shift_end_min[sid] - shift_start_min[sid]))
+        if remaining_duration_counts.get(emp, Counter()).get(duration_needed, 0) <= 0:
+            infeasible.append((emp, f"Durata non disponibile per il pattern settimanale: {duration_needed}min"))
+            return
+
+        is_out_of_range = shift_out_of_range.get((emp, sid), False)
+        if is_out_of_range and out_of_range_used[emp] >= out_of_range_allowance.get(emp, 0):
+            infeasible.append((emp, 'Limite giorni fuori fascia superato'))
+            return
+
         assignments.append((emp, day, sid))
         assignments_by_emp.setdefault(emp, {})[day] = sid
         assignment_details[(emp, day)] = {
@@ -935,9 +1091,13 @@ def assegnazione_tight_capacity(
             'extra_slots': set(),
             'ot_direction': None,
             'forced': forced,
+            'out_of_range': is_out_of_range,
         }
         if forced:
             forced_records.add((emp, day))
+        remaining_duration_counts[emp][duration_needed] -= 1
+        if is_out_of_range:
+            out_of_range_used[emp] += 1
         days_done[emp] += 1
         assigned_once.add((emp, day))
         day_assignments_count[day] += 1
@@ -964,6 +1124,10 @@ def assegnazione_tight_capacity(
         minute_distribution[start_minute % 60] -= 1
         if day in weekend_days and day in weekend_work.get(emp, set()):
             weekend_work[emp].discard(day)
+        duration = int(shift_duration_min.get(sid, shift_end_min[sid] - shift_start_min[sid]))
+        remaining_duration_counts[emp][duration] += 1
+        if meta and meta.get('out_of_range'):
+            out_of_range_used[emp] = max(0, out_of_range_used[emp] - 1)
         for slot in shift_slots.get(sid, []):
             update_coverage(day, slot, -1)
         if meta:
@@ -996,6 +1160,8 @@ def assegnazione_tight_capacity(
             if (emp, day) in assigned_once:
                 continue
             for sid in shift_by_emp.get(emp, []):
+                if not can_use_shift(emp, sid):
+                    continue
                 val = shift_value(emp, day, sid, allow_overcapacity=True, force_any=force_balance)
                 if val <= -1e4:
                     continue
@@ -1051,6 +1217,8 @@ def assegnazione_tight_capacity(
             best = None
             best_sid = None
             for sid in shift_by_emp.get(emp, []):
+                if not can_use_shift(emp, sid):
+                    continue
                 val = shift_value(emp, day, sid)
                 key = (val, -shift_start_min[sid])
                 if best is None or key > best:
@@ -1092,6 +1260,8 @@ def assegnazione_tight_capacity(
                 if (emp, day) in assigned_once or day in forced_off.get(emp, set()):
                     continue
                 for sid in shift_by_emp.get(emp, []):
+                    if not can_use_shift(emp, sid):
+                        continue
                     if target_slot not in shift_slots.get(sid, []):
                         continue
                     val = shift_value(emp, day, sid)
@@ -1124,6 +1294,8 @@ def assegnazione_tight_capacity(
                 if day in weekend_days and len(weekend_work[emp]) > min_week:
                     continue
                 for sid in shift_by_emp.get(emp, []):
+                    if not can_use_shift(emp, sid):
+                        continue
                     val = shift_value(emp, day, sid, allow_overcapacity=True)
                     if val <= -1e4:
                         continue
@@ -1251,6 +1423,11 @@ def assegnazione_tight_capacity(
                             # Esegui lo swap
                             remove_assignment(emp, wday)
                             remove_assignment(cand, day_cand)
+                            if not can_use_shift(cand, sid_for_cand) or not can_use_shift(emp, sid_for_emp):
+                                apply_assignment(emp, wday, sid_w)
+                                apply_assignment(cand, day_cand, sid_cand)
+                                fail_reasons['no_weekday_shifts'] += 1
+                                continue
                             apply_assignment(cand, wday, sid_for_cand)
                             apply_assignment(emp, day_cand, sid_for_emp)
                             total_swaps += 1
@@ -1284,8 +1461,6 @@ def assegnazione_tight_capacity(
     rebalance_weekends()
 
     def ensure_required_days():
-        if not force_balance:
-            return
         attempts = 0
         max_attempts = max(1, len(ris) * 4)
         while True:
@@ -1295,10 +1470,29 @@ def assegnazione_tight_capacity(
             missing.sort(key=lambda e: (days_done[e], len(shift_by_emp.get(e, []))))
             progress = False
             for emp in missing:
-                day_sel, sid_sel = pick_force_assignment(emp)
+                if force_balance:
+                    day_sel, sid_sel = pick_force_assignment(emp)
+                else:
+                    best = None
+                    day_sel = None
+                    sid_sel = None
+                    for day in giorni_validi:
+                        if (emp, day) in assigned_once or day in forced_off.get(emp, set()):
+                            continue
+                        for sid in shift_by_emp.get(emp, []):
+                            if not can_use_shift(emp, sid):
+                                continue
+                            val = shift_value(emp, day, sid, allow_overcapacity=True)
+                            if val <= -1e4:
+                                continue
+                            key = (val, -shift_start_min[sid])
+                            if best is None or key > best:
+                                best = key
+                                day_sel = day
+                                sid_sel = sid
                 if sid_sel is None:
                     continue
-                apply_assignment(emp, day_sel, sid_sel, forced=True)
+                apply_assignment(emp, day_sel, sid_sel, forced=force_balance)
                 progress = True
             if not progress:
                 default_msg = 'Impossibile assegnare il numero di turni richiesto dalle risorse.'
@@ -1352,6 +1546,8 @@ def assegnazione_tight_capacity(
                     continue  # CRITICO: NON violare riposi obbligatori!
 
                 for sid in shift_by_emp.get(emp, []):
+                    if not can_use_shift(emp, sid):
+                        continue
                     if slot in shift_slots.get(sid, []):
                         # Calcola score anche se può causare overcap
                         val = shift_value(emp, day, sid, allow_overcapacity=True, force_any=True)
@@ -2042,6 +2238,9 @@ def assegnazione_tight_capacity(
             emp, day_remove, sid_remove, sid_new = candidate
             print(f"   → Swap: {emp} {day_remove}→Sab (gap infrasettimanale accettato per presidio)")
             remove_assignment(emp, day_remove)
+            if not can_use_shift(emp, sid_new):
+                apply_assignment(emp, day_remove, sid_remove)
+                continue
             apply_assignment(emp, target_day, sid_new)
 
     def fill_sunday_gap(max_iter=500):
@@ -2172,6 +2371,9 @@ def assegnazione_tight_capacity(
             emp, day_remove, sid_remove, sid_new = candidate
             print(f"   → Swap: {emp} {day_remove}→Dom (gap infrasettimanale accettato per presidio)")
             remove_assignment(emp, day_remove)
+            if not can_use_shift(emp, sid_new):
+                apply_assignment(emp, day_remove, sid_remove)
+                continue
             apply_assignment(emp, target_day, sid_new)
 
     def fill_all_critical_gaps(max_iter=500):
@@ -2332,6 +2534,9 @@ def assegnazione_tight_capacity(
             emp, day_remove, sid_remove, sid_new = candidate
             print(f"   → Swap: {emp} {day_remove}→{target_day}")
             remove_assignment(emp, day_remove)
+            if not can_use_shift(emp, sid_new):
+                apply_assignment(emp, day_remove, sid_remove)
+                continue
             apply_assignment(emp, target_day, sid_new)
 
     # PRIORITÀ ASSOLUTA: Garantire presidio su TUTTE le fasce
@@ -2474,6 +2679,9 @@ def assegnazione_tight_capacity(
             # Esegui swap
             print(f"   → Swap: {emp} {most_over}→{most_under}{weekend_info}")
             remove_assignment(emp, most_over)
+            if not can_use_shift(emp, sid_new):
+                apply_assignment(emp, most_over, sid_over)
+                continue
             apply_assignment(emp, most_under, sid_new)
             swapped = True
 
@@ -2577,14 +2785,32 @@ def assegnazione_tight_capacity(
         if actual_days > required_days:
             violations.append(f"⛔ {emp}: lavora {actual_days} giorni ma dovrebbe lavorare MAX {required_days} (riposi violati!)")
             infeasible.append((emp, f"VIOLAZIONE RIPOSI: lavora {actual_days} giorni invece di {required_days}"))
+        elif actual_days < required_days:
+            violations.append(f"⛔ {emp}: lavora {actual_days} giorni ma dovrebbe lavorare MIN {required_days} (riposi eccessivi)")
+            infeasible.append((emp, f"VIOLAZIONE RIPOSI: lavora {actual_days} giorni invece di {required_days}"))
 
-    # 2. Verifica ore/giorno (durata turni)
+    # 2. Verifica pattern ore/giorno (durate previste)
+    actual_duration_counts: Dict[str, Counter] = {emp: Counter() for emp in ris['id dipendente']}
     for emp, day, sid in assignments:
-        # Usa la durata dichiarata per turni spezzati, altrimenti calcola da inizio/fine
         actual_duration = shift_duration_min.get(sid, shift_end_min[sid] - shift_start_min[sid])
-        required_duration = durations_by_emp.get(emp, 240)
-        if actual_duration != required_duration:
-            violations.append(f"⛔ {emp} {day}: turno {actual_duration}min invece di {required_duration}min richiesti")
+        actual_duration_counts[emp][int(actual_duration)] += 1
+
+    for emp in ris['id dipendente']:
+        expected_counts = expected_duration_counts.get(emp, Counter())
+        actual_counts = actual_duration_counts.get(emp, Counter())
+        for duration, expected_count in expected_counts.items():
+            actual_count = actual_counts.get(duration, 0)
+            if actual_count != expected_count:
+                violations.append(
+                    f"⛔ {emp}: durata {duration}min assegnata {actual_count}/{expected_count} volte"
+                )
+                infeasible.append(
+                    (emp, f"Durate non rispettate: {duration}m attesi {expected_count}, assegnati {actual_count}")
+                )
+        extra = {dur: cnt for dur, cnt in actual_counts.items() if dur not in expected_counts and cnt > 0}
+        for dur, cnt in extra.items():
+            violations.append(f"⛔ {emp}: durata non prevista {dur}m ({cnt} volte)")
+            infeasible.append((emp, f"Durata {dur}m non prevista assegnata {cnt} volte"))
 
     # 3. Verifica straordinario non superi il disponibile
     for emp in ris['id dipendente']:
@@ -2930,8 +3156,24 @@ def main():
     req, turni, ris, cfg = carica_dati(args.input)
     req_pre = prepara_req(req)
 
-    durations_by_emp, rest_target_by_emp, ot_minutes_by_emp, ot_split_by_emp, ot_daily_minutes_by_emp = infer_personal_params_from_risorse(ris)
-    durations_set_min = set(durations_by_emp.values())
+    (
+        durations_by_emp,
+        rest_target_by_emp,
+        ot_minutes_by_emp,
+        ot_split_by_emp,
+        ot_daily_minutes_by_emp,
+        duration_patterns_by_emp,
+        out_of_range_allowance_by_emp,
+    ) = infer_personal_params_from_risorse(ris)
+
+    allowed_durations_by_emp: Dict[str, Set[int]] = {}
+    for emp in ris['id dipendente']:
+        pattern = duration_patterns_by_emp.get(emp)
+        if pattern:
+            allowed_durations_by_emp[emp] = {int(d) for d in pattern}
+        else:
+            allowed_durations_by_emp[emp] = {int(durations_by_emp.get(emp, 240))}
+    durations_set_min = {int(d) for durs in allowed_durations_by_emp.values() for d in durs} or {240}
 
     prefer_tokens = [t.strip() for t in str(args.prefer_phase).split(',') if t.strip()]
     prefer_values = []
@@ -2995,7 +3237,13 @@ def main():
         for minute in sorted(distrib):
             print(f"  :{minute:02d} -> {distrib[minute]}")
 
-    shift_by_emp = determina_turni_ammissibili(ris, turni_cand, durations_by_emp)
+    shift_by_emp, shift_out_of_range, avail_ini_min, avail_end_min = determina_turni_ammissibili(
+        ris,
+        turni_cand,
+        durations_by_emp,
+        allowed_durations_by_emp,
+        out_of_range_allowance_by_emp,
+    )
 
     # Diagnostica turni ammissibili per dipendente
     emps_no_shifts = [emp for emp, shifts in shift_by_emp.items() if not shifts]
@@ -3030,7 +3278,11 @@ def main():
         prefer_phases=prefer_tuple, strict_phase=args.strict_phase,
         force_balance=args.force_balance,
         overcap_percent_map=overcap_percent_map,
-        overcap_penalty_map=overcap_penalty_map
+        overcap_penalty_map=overcap_penalty_map,
+        duration_patterns_by_emp=duration_patterns_by_emp,
+        allowed_durations_by_emp=allowed_durations_by_emp,
+        shift_out_of_range=shift_out_of_range,
+        out_of_range_allowance_by_emp=out_of_range_allowance_by_emp,
     )
 
     pivot, df_ass, df_cov = crea_output(assignments, turni_cand, ris, req_pre, day_colmap, slot_list, slot_size, shift_slots, assignment_details)
@@ -3038,13 +3290,8 @@ def main():
     turno_map = dict(zip(turni_cand['id turno'], turni_cand['start_min']))
 
     forced_summary = [(emp, day) for (emp, day), meta in assignment_details.items() if meta.get('forced')]
-    start_allowed = {}
-    end_allowed = {}
-    if 'Inizio fascia' in ris.columns and 'Fine fascia' in ris.columns:
-        for _, row in ris.iterrows():
-            emp = row['id dipendente']
-            start_allowed[emp] = _to_minutes(row.get('Inizio fascia'))
-            end_allowed[emp] = _to_minutes(row.get('Fine fascia'))
+    start_allowed = {emp: avail_ini_min.get(emp, 0) for emp in ris['id dipendente']}
+    end_allowed = {emp: avail_end_min.get(emp, 24 * 60) for emp in ris['id dipendente']}
     out_of_range = []
     for (emp, day), meta in assignment_details.items():
         actual_start = int(meta.get('actual_start_min', meta['base_start']))
