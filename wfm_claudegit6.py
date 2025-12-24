@@ -270,7 +270,92 @@ def map_req_day_columns(req: pd.DataFrame):
 
 
 # ----------------------------- I/O -----------------------------
-def carica_dati(percorso_input: str):
+def _seleziona_foglio_requisiti(
+    xls: pd.ExcelFile,
+    skill_preferita: Optional[str] = None,
+) -> Tuple[str, Optional[str]]:
+    skill_norm = _normalize(skill_preferita) if skill_preferita else None
+    for name in xls.sheet_names:
+        if name.strip().lower() == 'requisiti':
+            if skill_norm:
+                return name, skill_preferita
+            return name, None
+    requisiti_sheets: list[Tuple[str, str]] = []
+    for name in xls.sheet_names:
+        lowered = name.strip().lower()
+        if lowered.startswith('requisiti'):
+            suffix = lowered[len('requisiti'):]
+        elif lowered.startswith('requisit'):
+            suffix = lowered[len('requisit'):]
+        else:
+            continue
+        suffix = suffix.lstrip(" _-").strip()
+        requisiti_sheets.append((name, suffix))
+    if not requisiti_sheets:
+        available = ", ".join(xls.sheet_names)
+        raise ValueError(
+            "Nessun foglio requisiti trovato: usa 'Requisiti' oppure 'requisiti_<skill>'. "
+            f"Fogli disponibili: {available}"
+        )
+    if skill_norm:
+        for sheet_name, skill_suffix in requisiti_sheets:
+            if _normalize(skill_suffix) == skill_norm:
+                return sheet_name, skill_preferita
+        available = ", ".join(name for name, _ in requisiti_sheets)
+        raise ValueError(
+            "Nessun foglio requisiti corrisponde alla skill richiesta "
+            f"('{skill_preferita}'). Fogli disponibili: {available}"
+        )
+    if len(requisiti_sheets) > 1:
+        found = ", ".join(name for name, _ in requisiti_sheets)
+        raise ValueError(
+            "Trovati più fogli requisiti con prefisso 'requisiti': "
+            + found
+            + ". Specifica la skill con --skill oppure mantienine uno solo."
+        )
+    sheet_name, skill_suffix = requisiti_sheets[0]
+    return sheet_name, (skill_suffix or None)
+
+
+def _filtra_risorse_per_skill(ris: pd.DataFrame, skill_name: Optional[str]) -> pd.DataFrame:
+    if not skill_name:
+        return ris
+    skill_col = _find_col(ris, 'skill')
+    if skill_col is None and len(ris.columns) >= 19:
+        skill_col = ris.columns[18]  # Colonna S
+    if skill_col is None:
+        raise ValueError("Nel foglio 'Risorse' manca la colonna 'skill' (colonna S).")
+    target = _normalize(skill_name)
+    mask = ris[skill_col].apply(lambda v: _normalize(v) == target)
+    ris_filtrato = ris.loc[mask].copy()
+    if ris_filtrato.empty:
+        raise ValueError(f"Nessuna risorsa con skill '{skill_name}' nel foglio 'Risorse'.")
+    return ris_filtrato
+
+
+def _estrai_skill_unica_da_risorse(ris: pd.DataFrame) -> Optional[str]:
+    skill_col = _find_col(ris, 'skill')
+    if skill_col is None and len(ris.columns) >= 19:
+        skill_col = ris.columns[18]  # Colonna S
+    if skill_col is None:
+        return None
+    valori = (
+        ris[skill_col]
+        .dropna()
+        .astype(str)
+        .map(str.strip)
+    )
+    valori = valori[valori != '']
+    if valori.empty:
+        return None
+    normalizzati = valori.map(_normalize)
+    unici = normalizzati.unique()
+    if len(unici) == 1:
+        return valori.iloc[0]
+    return None
+
+
+def carica_dati(percorso_input: str, skill_preferita: Optional[str] = None):
     p = Path(percorso_input).expanduser()
     if not p.is_absolute():
         p = Path.cwd() / p
@@ -279,9 +364,12 @@ def carica_dati(percorso_input: str):
     if p.is_dir():
         raise IsADirectoryError(f"Il percorso ÃƒÂ¨ una CARTELLA, non un file: {p}")
     xls = pd.ExcelFile(p, engine='openpyxl')
-    req = pd.read_excel(xls, 'Requisiti')
     turni = pd.read_excel(xls, 'Turni')  # opzionale
     ris = pd.read_excel(xls, 'Risorse')
+    skill_effettiva = skill_preferita or _estrai_skill_unica_da_risorse(ris)
+    req_sheet, skill_name = _seleziona_foglio_requisiti(xls, skill_effettiva)
+    req = pd.read_excel(xls, req_sheet)
+    ris = _filtra_risorse_per_skill(ris, skill_name)
     try:
         cfg = pd.read_excel(xls, 'config')
     except ValueError:
@@ -3151,9 +3239,11 @@ def main():
                         help='Override percentuale overcapacity per giorno (es. "Dom=0,Gio=0.12")')
     parser.add_argument('--overcap-penalty', type=str, default=None,
                         help='Override penalità overcapacity per giorno (es. "Dom=1.5")')
+    parser.add_argument('--skill', type=str, default=None,
+                        help="Seleziona la skill quando ci sono più fogli requisiti (es. 'ps')")
     args = parser.parse_args()
 
-    req, turni, ris, cfg = carica_dati(args.input)
+    req, turni, ris, cfg = carica_dati(args.input, args.skill)
     req_pre = prepara_req(req)
 
     (
