@@ -270,6 +270,39 @@ def map_req_day_columns(req: pd.DataFrame):
 
 
 # ----------------------------- I/O -----------------------------
+def _seleziona_foglio_requisiti(xls: pd.ExcelFile) -> Tuple[str, Optional[str]]:
+    if 'Requisiti' in xls.sheet_names:
+        return 'Requisiti', None
+    requisiti_sheets = [name for name in xls.sheet_names if name.lower().startswith('requisit_')]
+    if not requisiti_sheets:
+        raise ValueError("Nessun foglio requisiti trovato: usa 'Requisiti' oppure 'requisit_<skill>'.")
+    if len(requisiti_sheets) > 1:
+        raise ValueError(
+            "Trovati più fogli requisiti con prefisso 'requisit_': "
+            + ", ".join(requisiti_sheets)
+            + ". Mantienine uno solo per l'esecuzione."
+        )
+    sheet_name = requisiti_sheets[0]
+    skill_name = sheet_name[len('requisit_'):].strip()
+    return sheet_name, (skill_name or None)
+
+
+def _filtra_risorse_per_skill(ris: pd.DataFrame, skill_name: Optional[str]) -> pd.DataFrame:
+    if not skill_name:
+        return ris
+    skill_col = _find_col(ris, 'skill')
+    if skill_col is None and len(ris.columns) >= 19:
+        skill_col = ris.columns[18]  # Colonna S
+    if skill_col is None:
+        raise ValueError("Nel foglio 'Risorse' manca la colonna 'skill' (colonna S).")
+    target = _normalize(skill_name)
+    mask = ris[skill_col].apply(lambda v: _normalize(v) == target)
+    ris_filtrato = ris.loc[mask].copy()
+    if ris_filtrato.empty:
+        raise ValueError(f"Nessuna risorsa con skill '{skill_name}' nel foglio 'Risorse'.")
+    return ris_filtrato
+
+
 def carica_dati(percorso_input: str):
     p = Path(percorso_input).expanduser()
     if not p.is_absolute():
@@ -279,9 +312,11 @@ def carica_dati(percorso_input: str):
     if p.is_dir():
         raise IsADirectoryError(f"Il percorso ÃƒÂ¨ una CARTELLA, non un file: {p}")
     xls = pd.ExcelFile(p, engine='openpyxl')
-    req = pd.read_excel(xls, 'Requisiti')
+    req_sheet, skill_name = _seleziona_foglio_requisiti(xls)
+    req = pd.read_excel(xls, req_sheet)
     turni = pd.read_excel(xls, 'Turni')  # opzionale
     ris = pd.read_excel(xls, 'Risorse')
+    ris = _filtra_risorse_per_skill(ris, skill_name)
     try:
         cfg = pd.read_excel(xls, 'config')
     except ValueError:
