@@ -283,15 +283,18 @@ def _seleziona_foglio_requisiti(
     requisiti_sheets: list[Tuple[str, str]] = []
     for name in xls.sheet_names:
         lowered = name.strip().lower()
-        if not lowered.startswith('requisit'):
+        if lowered.startswith('requisiti'):
+            suffix = lowered[len('requisiti'):]
+        elif lowered.startswith('requisit'):
+            suffix = lowered[len('requisit'):]
+        else:
             continue
-        suffix = lowered[len('requisit'):]
         suffix = suffix.lstrip(" _-").strip()
         requisiti_sheets.append((name, suffix))
     if not requisiti_sheets:
         available = ", ".join(xls.sheet_names)
         raise ValueError(
-            "Nessun foglio requisiti trovato: usa 'Requisiti' oppure 'requisit_<skill>'. "
+            "Nessun foglio requisiti trovato: usa 'Requisiti' oppure 'requisiti_<skill>'. "
             f"Fogli disponibili: {available}"
         )
     if skill_norm:
@@ -306,7 +309,7 @@ def _seleziona_foglio_requisiti(
     if len(requisiti_sheets) > 1:
         found = ", ".join(name for name, _ in requisiti_sheets)
         raise ValueError(
-            "Trovati più fogli requisiti con prefisso 'requisit': "
+            "Trovati più fogli requisiti con prefisso 'requisiti': "
             + found
             + ". Specifica la skill con --skill oppure mantienine uno solo."
         )
