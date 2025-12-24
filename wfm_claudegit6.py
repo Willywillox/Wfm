@@ -20,7 +20,7 @@ import unicodedata
 from pathlib import Path
 import re
 import datetime as _dt
-from collections import defaultdict
+from collections import defaultdict, Counter
 import math
 from typing import Dict, Optional, Set, Tuple
 import pandas as pd
@@ -86,6 +86,40 @@ def _parse_rest_count_cell(val) -> int:
         return 2
     n = int(m.group(1))
     return int(max(0, min(7, n)))
+
+
+def _parse_weekly_hours_pattern(val) -> Optional[list[int]]:
+    if pd.isna(val):
+        return None
+    if isinstance(val, (int, float)):
+        v = float(val)
+        return [int(round(v * 60))] if v > 0 else None
+    s = str(val).strip()
+    if not s:
+        return None
+    tokens = re.split(r"[-_/;\s]+", s)
+    hours: list[int] = []
+    for tok in tokens:
+        if not tok:
+            continue
+        try:
+            v = float(tok.replace(',', '.'))
+        except ValueError:
+            continue
+        if v <= 0:
+            continue
+        hours.append(int(round(v * 60)))
+    return hours or None
+
+
+def _parse_positive_int(val) -> int:
+    if pd.isna(val):
+        return 0
+    try:
+        num = int(round(float(str(val).replace(',', '.'))))
+        return max(0, num)
+    except Exception:
+        return 0
 
 
 def _normalize(s: str) -> str:
@@ -255,6 +289,120 @@ def carica_dati(percorso_input: str):
     return req, turni, ris, cfg
 
 
+def carica_turni_predefiniti(turni: pd.DataFrame, slot_size: int = 15) -> pd.DataFrame:
+    """
+    Carica turni predefiniti dal foglio Turni, gestendo sia turni normali che spezzati.
+
+    Struttura attesa foglio Turni:
+    - Col A: id turno
+    - Col B: entrata (inizio prima parte)
+    - Col C: uscita (fine prima parte)
+    - Col D: Inizio spezzato (inizio seconda parte, vuoto se non spezzato)
+    - Col E: Fine spezzato (fine seconda parte, vuoto se non spezzato)
+    - Col F: durata (ore totali)
+
+    Returns:
+        DataFrame con colonne: id turno, start_min, end_min, durata_min,
+                              is_spezzato, spezzato_start_min, spezzato_end_min
+    """
+    rows = []
+
+    # Trova colonne
+    id_col = _find_col(turni, 'id turno')
+    entrata_col = _find_col(turni, 'entrata')
+    uscita_col = _find_col(turni, 'uscita')
+    durata_col = _find_col(turni, 'durata')
+
+    # Colonne spezzato (cerca varianti)
+    spezz_ini_col = _find_col(turni, 'Inizio spezzato') or _find_col(turni, 'Inzio spezzato')
+    spezz_fin_col = _find_col(turni, 'Fine spezzato')
+
+    if id_col is None or entrata_col is None or uscita_col is None:
+        raise ValueError("Foglio Turni deve avere colonne: 'id turno', 'entrata', 'uscita'")
+
+    for _, row in turni.iterrows():
+        turno_id = row[id_col]
+        if pd.isna(turno_id) or str(turno_id).strip() == '':
+            continue
+
+        # Prima parte del turno
+        start_min = _to_minutes(row[entrata_col])
+        end_min = _to_minutes(row[uscita_col])
+
+        # Durata
+        if durata_col is not None and not pd.isna(row[durata_col]):
+            durata_min = int(float(row[durata_col]) * 60)
+        else:
+            durata_min = end_min - start_min
+
+        # Verifica se è spezzato
+        is_spezzato = False
+        spezz_start = None
+        spezz_end = None
+
+        if spezz_ini_col is not None and spezz_fin_col is not None:
+            spezz_ini_val = row.get(spezz_ini_col)
+            spezz_fin_val = row.get(spezz_fin_col)
+
+            if not pd.isna(spezz_ini_val) and not pd.isna(spezz_fin_val):
+                spezz_start = _to_minutes(spezz_ini_val)
+                spezz_end = _to_minutes(spezz_fin_val)
+                if spezz_start < 24*60 and spezz_end < 24*60:  # Validi
+                    is_spezzato = True
+
+        # end_min finale è la fine dell'ultima parte
+        final_end = spezz_end if is_spezzato else end_min
+
+        rows.append({
+            'id turno': str(turno_id).strip(),
+            'entrata_str': _from_minutes(start_min),
+            'uscita_str': _from_minutes(final_end),
+            'start_min': start_min,
+            'end_min': final_end,
+            'durata_min': durata_min,
+            'is_spezzato': is_spezzato,
+            'parte1_start': start_min,
+            'parte1_end': end_min,
+            'parte2_start': spezz_start if is_spezzato else None,
+            'parte2_end': spezz_end if is_spezzato else None,
+        })
+
+    df = pd.DataFrame(rows)
+    print(f"INFO: Caricati {len(df)} turni predefiniti ({sum(df['is_spezzato'])} spezzati)")
+    return df
+
+
+def calcola_slots_turno(turno_row, slot_size: int = 15) -> list:
+    """
+    Calcola la lista di slot coperti da un turno (considerando eventuali pause per spezzati).
+
+    Per turno normale 09:00-13:00 con slot_size=15: [540, 555, 570, ..., 765]
+    Per turno spezzato 09:00-13:00 + 14:00-18:00: [540, 555, ..., 765] + [840, 855, ..., 1065]
+    """
+    slots = []
+
+    # Prima parte
+    start1 = int(turno_row['parte1_start'])
+    end1 = int(turno_row['parte1_end'])
+
+    slot = start1
+    while slot < end1:
+        slots.append(slot)
+        slot += slot_size
+
+    # Seconda parte (se spezzato)
+    if turno_row['is_spezzato'] and turno_row['parte2_start'] is not None:
+        start2 = int(turno_row['parte2_start'])
+        end2 = int(turno_row['parte2_end'])
+
+        slot = start2
+        while slot < end2:
+            slots.append(slot)
+            slot += slot_size
+
+    return slots
+
+
 # ----------------------------- Prep -----------------------------
 def prepara_req(req: pd.DataFrame) -> pd.DataFrame:
     q = req.copy()
@@ -267,12 +415,28 @@ def prepara_req(req: pd.DataFrame) -> pd.DataFrame:
 
 
 def infer_personal_params_from_risorse(ris: pd.DataFrame):
+    """
+    Estrae i parametri personali dal foglio "Risorse", incluse le combinazioni
+    settimanali di ore/giorno (colonna Q) e il numero di giorni consentiti fuori
+    fascia (colonna R), trasformandoli in vincoli utilizzabili durante la
+    generazione dei turni.
+
+    Restituisce durate base, riposi target, straordinari disponibili, flag di
+    spezzamento OT, straordinari per giorno, pattern di durata e budget
+    "fuori fascia" per ciascun dipendente.
+    """
     if ris.shape[1] < 4:
         raise ValueError("Il foglio 'Risorse' deve avere almeno 4 colonne: A,B,C(ore/giorno),D(riposi/settimana).")
     hours_col = ris.columns[2]  # C
     rests_col = ris.columns[3]  # D
     ot_disp_col = _find_col(ris, 'OT disp')
     ot_split_col = _find_col(ris, 'OT spezz')
+    pattern_col = _find_col(ris, 'combinazione')
+    if pattern_col is None and len(ris.columns) >= 17:
+        pattern_col = ris.columns[16]  # Colonna Q
+    flex_col = _find_col(ris, 'fuori fascia')
+    if flex_col is None and len(ris.columns) >= 18:
+        flex_col = ris.columns[17]  # Colonna R
     ot_day_labels = {
         'Lun': 'OT lun',
         'Mar': 'OT mar',
@@ -296,12 +460,23 @@ def infer_personal_params_from_risorse(ris: pd.DataFrame):
     ot_minutes_by_emp = {}
     ot_split_by_emp = {}
     ot_daily_minutes_by_emp = {}
+    duration_patterns_by_emp: Dict[str, list[int]] = {}
+    out_of_range_allowance_by_emp: Dict[str, int] = {}
 
     for _, row in ris.iterrows():
         emp = row['id dipendente']
         ore = _parse_hours_cell(row[hours_col])
-        durations_by_emp[emp] = int(round(ore * 60))
+        base_duration = int(round(ore * 60))
+        pattern_val = row.get(pattern_col) if pattern_col is not None else None
+        pattern_hours = _parse_weekly_hours_pattern(pattern_val)
+        if pattern_hours:
+            duration_patterns_by_emp[emp] = pattern_hours
+            base_duration = pattern_hours[0]
+        durations_by_emp[emp] = base_duration
         rest_target_by_emp[emp] = _parse_rest_count_cell(row[rests_col])
+
+        flex_val = row.get(flex_col) if flex_col is not None else None
+        out_of_range_allowance_by_emp[emp] = _parse_positive_int(flex_val)
 
         raw_ot = row.get(ot_disp_col) if ot_disp_col else None
         ot_minutes = 0
@@ -339,7 +514,15 @@ def infer_personal_params_from_risorse(ris: pd.DataFrame):
             split_flag = normalized in {'ok'}
         ot_split_by_emp[emp] = split_flag
 
-    return durations_by_emp, rest_target_by_emp, ot_minutes_by_emp, ot_split_by_emp, ot_daily_minutes_by_emp
+    return (
+        durations_by_emp,
+        rest_target_by_emp,
+        ot_minutes_by_emp,
+        ot_split_by_emp,
+        ot_daily_minutes_by_emp,
+        duration_patterns_by_emp,
+        out_of_range_allowance_by_emp,
+    )
 def genera_turni_candidati(req_pre: pd.DataFrame, durations_set_min: set, grid_step_min: int, 
                           force_phase_minutes=None) -> pd.DataFrame:
     """
@@ -373,7 +556,13 @@ def genera_turni_candidati(req_pre: pd.DataFrame, durations_set_min: set, grid_s
     return pd.DataFrame(rows)
 
 
-def determina_turni_ammissibili(ris: pd.DataFrame, turni_cand: pd.DataFrame, durations_by_emp: dict):
+def determina_turni_ammissibili(
+    ris: pd.DataFrame,
+    turni_cand: pd.DataFrame,
+    durations_by_emp: dict,
+    allowed_durations_by_emp: Optional[Dict[str, Set[int]]] = None,
+    out_of_range_allowance_by_emp: Optional[Dict[str, int]] = None,
+):
     fin_col = _find_col(ris, 'Fine fascia')
     ini_col = _find_col(ris, 'Inizio fascia')
     if fin_col is None:
@@ -387,16 +576,29 @@ def determina_turni_ammissibili(ris: pd.DataFrame, turni_cand: pd.DataFrame, dur
         for _, row in ris.iterrows()
     }
     shift_by_emp = {}
+    shift_out_of_range = {}
+    allowed_durations_by_emp = allowed_durations_by_emp or {}
+    out_of_range_allowance_by_emp = out_of_range_allowance_by_emp or {}
     for emp in ris['id dipendente']:
         smin = avail_ini_min.get(emp, 0)
         emin = avail_end_min.get(emp, 24*60)
-        d_req = durations_by_emp.get(emp, 240)
+        durations_allowed = allowed_durations_by_emp.get(emp, {durations_by_emp.get(emp, 240)})
+        include_outside = out_of_range_allowance_by_emp.get(emp, 0) > 0
         shift_by_emp[emp] = [
             row['id turno']
             for _, row in turni_cand.iterrows()
-            if row['start_min'] >= smin and row['end_min'] <= emin and int(row['durata_min']) == int(d_req)
+            if (
+                (include_outside or (row['start_min'] >= smin and row['end_min'] <= emin))
+                and int(row['durata_min']) in {int(d) for d in durations_allowed}
+            )
         ]
-    return shift_by_emp
+        for _, row in turni_cand.iterrows():
+            turno_id = row['id turno']
+            if turno_id not in shift_by_emp[emp]:
+                continue
+            inside = row['start_min'] >= smin and row['end_min'] <= emin
+            shift_out_of_range[(emp, turno_id)] = not inside
+    return shift_by_emp, shift_out_of_range, avail_ini_min, avail_end_min
 
 
 def compute_slot_size(req_pre: pd.DataFrame) -> int:
@@ -444,10 +646,16 @@ def leggi_vincoli_weekend(ris: pd.DataFrame):
 
 # ----------------------------- Algoritmo ottimizzato v5.0 -----------------------------
 
-def compute_tight_capacity_targets(req_pre: pd.DataFrame, ris: pd.DataFrame, durations_by_emp: dict,
-                                   rest_target_by_emp: dict, forced_off: dict,
-                                   overcap_percent_map: Dict[str, float],
-                                   overcap_penalty_map: Dict[str, float]):
+def compute_tight_capacity_targets(
+    req_pre: pd.DataFrame,
+    ris: pd.DataFrame,
+    durations_by_emp: dict,
+    rest_target_by_emp: dict,
+    forced_off: dict,
+    overcap_percent_map: Dict[str, float],
+    overcap_penalty_map: Dict[str, float],
+    duration_patterns_by_emp: Optional[Dict[str, list[int]]] = None,
+):
     """Calcola domanda, disponibilita' e vincoli giornalieri."""
     giorni = ['Lun','Mar','Mer','Gio','Ven','Sab','Dom']
     day_colmap = map_req_day_columns(req_pre)
@@ -464,7 +672,8 @@ def compute_tight_capacity_targets(req_pre: pd.DataFrame, ris: pd.DataFrame, dur
     for g in giorni:
         col = day_colmap.get(g)
         if col and col in req_pre.columns:
-            day_demand = float(req_pre[col].sum())
+            col_series = pd.to_numeric(req_pre[col], errors='coerce').fillna(0.0)
+            day_demand = float(col_series.sum())
             demand_by_day[g] = day_demand
             total_demand += day_demand
 
@@ -473,7 +682,7 @@ def compute_tight_capacity_targets(req_pre: pd.DataFrame, ris: pd.DataFrame, dur
                 min_demand_start[g] = 24 * 60
                 max_demand_end[g] = 0
             else:
-                fasce_con_domanda = req_pre[req_pre[col] > 0]
+                fasce_con_domanda = req_pre[col_series > 0]
                 if not fasce_con_domanda.empty:
                     min_demand_start[g] = int(fasce_con_domanda['start_min'].min())
                     max_demand_end[g] = int(fasce_con_domanda['end_min'].max())
@@ -482,7 +691,7 @@ def compute_tight_capacity_targets(req_pre: pd.DataFrame, ris: pd.DataFrame, dur
                     max_demand_end[g] = 0
 
             for i, slot in enumerate(slot_list):
-                demand_by_slot[g][slot] = float(req_pre.loc[i, col])
+                demand_by_slot[g][slot] = float(col_series.iat[i]) if i < len(col_series) else 0.0
         else:
             demand_by_day[g] = 0.0
             zero_demand_days.add(g)
@@ -493,15 +702,19 @@ def compute_tight_capacity_targets(req_pre: pd.DataFrame, ris: pd.DataFrame, dur
 
     total_capacity_slots = 0.0
     emp_work_days = {}
+    patterns = duration_patterns_by_emp or {}
     for emp in ris['id dipendente']:
         target_rest = int(rest_target_by_emp.get(emp, 2))
         forced = len(forced_off.get(emp, set()))
         if forced > target_rest:
             raise ValueError(f"Vincoli incoerenti per {emp}: riposi richiesti={target_rest}, ma giorni forzati OFF={forced}.")
-        work_days = max(0, 7 - target_rest)
+        work_days = len(patterns[emp]) if emp in patterns else max(0, 7 - target_rest)
         emp_work_days[emp] = work_days
-        slots_per_shift = durations_by_emp.get(emp, 240) / slot_size
-        total_capacity_slots += work_days * slots_per_shift
+        if emp in patterns:
+            total_capacity_slots += sum(d / slot_size for d in patterns[emp])
+        else:
+            slots_per_shift = durations_by_emp.get(emp, 240) / slot_size
+            total_capacity_slots += work_days * slots_per_shift
 
     overcapacity_ratio = (total_capacity_slots - total_demand) / total_demand if total_demand > 0 else 0.0
 
@@ -558,12 +771,15 @@ def assegnazione_tight_capacity(
     ot_split_by_emp: dict,
     ot_daily_minutes_by_emp: dict,
     allow_ot_overcap: bool = False,
-    prefer_phases=(15,
-    45),
+    prefer_phases=(15, 45),
     strict_phase=False,
     force_balance: bool = False,
     overcap_percent_map: Optional[Dict[str, float]] = None,
-    overcap_penalty_map: Optional[Dict[str, float]] = None
+    overcap_penalty_map: Optional[Dict[str, float]] = None,
+    duration_patterns_by_emp: Optional[Dict[str, list[int]]] = None,
+    allowed_durations_by_emp: Optional[Dict[str, Set[int]]] = None,
+    shift_out_of_range: Optional[Dict[Tuple[str, str], bool]] = None,
+    out_of_range_allowance_by_emp: Optional[Dict[str, int]] = None,
 ):
     '''Assegna i turni rispettando domanda, riposi contrattuali e privilegiando i minuti preferiti.'''
     giorni = ['Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab', 'Dom']
@@ -572,8 +788,16 @@ def assegnazione_tight_capacity(
     penalty_map = dict(overcap_penalty_map) if overcap_penalty_map else dict(DAY_OVERCAP_PENALTY)
     forced_records: Set[Tuple[str, str]] = set()
 
-    targets = compute_tight_capacity_targets(req, ris, durations_by_emp, rest_target_by_emp, forced_off,
-                                             percent_map, penalty_map)
+    targets = compute_tight_capacity_targets(
+        req,
+        ris,
+        durations_by_emp,
+        rest_target_by_emp,
+        forced_off,
+        percent_map,
+        penalty_map,
+        duration_patterns_by_emp,
+    )
     demand_by_slot = targets['demand_by_slot']
     demand_by_day = targets['demand_by_day']
     total_demand = targets['total_demand']
@@ -589,7 +813,13 @@ def assegnazione_tight_capacity(
     min_demand_start = targets['min_demand_start']
     max_demand_end = targets['max_demand_end']
 
-    slot_coverage = max(1, int(round(next(iter(durations_by_emp.values())) / slot_size)))
+    duration_patterns_by_emp = duration_patterns_by_emp or {}
+    allowed_durations_by_emp = allowed_durations_by_emp or {
+        emp: {durations_by_emp.get(emp, 240)} for emp in ris['id dipendente']
+    }
+    all_durations = sorted({dur for durs in allowed_durations_by_emp.values() for dur in durs})
+    typical_duration = all_durations[0] if all_durations else next(iter(durations_by_emp.values()))
+    slot_coverage = max(1, int(round(typical_duration / slot_size)))
     dom_demand = demand_by_day.get('Dom', 0.0)
     if dom_demand > 0:
         dom_needed = int((dom_demand + slot_coverage - 1) // slot_coverage)
@@ -616,16 +846,43 @@ def assegnazione_tight_capacity(
 
     shift_start_min = dict(zip(turni_cand['id turno'], turni_cand['start_min']))
     shift_end_min = dict(zip(turni_cand['id turno'], turni_cand['end_min']))
-    shift_slots = {
-        row['id turno']: [s for s in slot_list if row['start_min'] <= s < row['end_min']]
-        for _, row in turni_cand.iterrows()
-    }
+    shift_duration_min = dict(zip(turni_cand['id turno'], turni_cand['durata_min']))
+
+    # Calcola slot coperti per ogni turno (gestisce turni spezzati)
+    shift_slots = {}
+    for _, row in turni_cand.iterrows():
+        turno_id = row['id turno']
+        if 'is_spezzato' in row and row['is_spezzato']:
+            # Turno spezzato: usa calcola_slots_turno che gestisce le pause
+            all_slots = calcola_slots_turno(row, slot_size)
+            # Filtra solo gli slot presenti nella slot_list
+            shift_slots[turno_id] = [s for s in all_slots if s in slot_list]
+        else:
+            # Turno continuo: logica originale
+            shift_slots[turno_id] = [s for s in slot_list if row['start_min'] <= s < row['end_min']]
+
+    shift_out_of_range = shift_out_of_range or {}
+    out_of_range_allowance_by_emp = out_of_range_allowance_by_emp or {}
 
     assignment_details = {}
 
     days_done = {emp: 0 for emp in ris['id dipendente']}
     work_need = emp_work_days.copy()
     forced_off = {emp: set(days) for emp, days in forced_off.items()}
+    remaining_duration_counts: Dict[str, Counter] = {}
+    for emp in ris['id dipendente']:
+        pattern = duration_patterns_by_emp.get(emp)
+        if pattern:
+            # Il pattern non impone l'ordine dei giorni: qui memorizziamo solo quante
+            # volte va usata ciascuna durata (es. un 5h e quattro 4h), mentre la
+            # scelta di quando usarla avverrà più avanti in base ai gap di domanda
+            # e ai punteggi di turno.
+            remaining_duration_counts[emp] = Counter(pattern)
+        else:
+            remaining_duration_counts[emp] = Counter({durations_by_emp.get(emp, 240): work_need.get(emp, 0)})
+    expected_duration_counts = {emp: counts.copy() for emp, counts in remaining_duration_counts.items()}
+    out_of_range_allowance = {emp: int(out_of_range_allowance_by_emp.get(emp, 0)) for emp in ris['id dipendente']}
+    out_of_range_used = defaultdict(int)
 
     for emp in ris['id dipendente']:
         for day in zero_demand_days:
@@ -701,15 +958,30 @@ def assegnazione_tight_capacity(
         if already == 0:
             base = 45.0
         else:
+            # VINCOLO HARD: Se emp ha già 1+ weekend, verifica se ci sono alternative
             others = any(
                 len(weekend_work[o]) == 0 and days_done[o] < work_need[o] and day not in forced_off.get(o, set())
                 for o in ris['id dipendente'] if o != emp
             )
             if others:
-                base = -180.0 if strict_phase else -110.0
+                # PENALITÀ MASSICCIA: Blocco quasi totale del secondo weekend
+                # Aumentato da -180/-110 a -5000 per evitare weekend consecutivi
+                base = -5000.0
+            elif already >= 2:
+                # Già ha entrambi i weekend: blocco totale
+                base = -10000.0
             else:
-                base = -60.0
+                # Nessun altro disponibile MA ha già un weekend
+                base = -500.0  # Aumentato da -60
         return base * capacity_factor
+
+    def can_use_shift(emp: str, sid: str) -> bool:
+        duration = int(shift_duration_min.get(sid, shift_end_min[sid] - shift_start_min[sid]))
+        if remaining_duration_counts.get(emp, Counter()).get(duration, 0) <= 0:
+            return False
+        if shift_out_of_range.get((emp, sid), False):
+            return out_of_range_used[emp] < out_of_range_allowance.get(emp, 0)
+        return True
 
     def shift_value(emp: str, day: str, sid: str, allow_overcapacity: bool = False, force_any: bool = False) -> float:
         if day in zero_demand_days and not force_any:
@@ -726,6 +998,11 @@ def assegnazione_tight_capacity(
         # Questo impedisce che turni tipo 16:45-20:45 vengano selezionati quando ci sono requisiti fino alle 21:00
         mde = max_demand_end.get(day, 24 * 60)
         score = 0.0
+        if shift_out_of_range.get((emp, sid), False):
+            remaining_flex = out_of_range_allowance.get(emp, 0) - out_of_range_used.get(emp, 0)
+            if remaining_flex <= 0 and not force_any:
+                return -1e4
+            score -= 140.0
         if not force_any and mde < 24 * 60:
             if en >= mde:
                 score += 90.0  # piccolo bonus per chi copre l'ultima fascia
@@ -788,6 +1065,16 @@ def assegnazione_tight_capacity(
             infeasible.append((emp, error_msg))
             return  # NON assegnare
 
+        duration_needed = int(shift_duration_min.get(sid, shift_end_min[sid] - shift_start_min[sid]))
+        if remaining_duration_counts.get(emp, Counter()).get(duration_needed, 0) <= 0:
+            infeasible.append((emp, f"Durata non disponibile per il pattern settimanale: {duration_needed}min"))
+            return
+
+        is_out_of_range = shift_out_of_range.get((emp, sid), False)
+        if is_out_of_range and out_of_range_used[emp] >= out_of_range_allowance.get(emp, 0):
+            infeasible.append((emp, 'Limite giorni fuori fascia superato'))
+            return
+
         assignments.append((emp, day, sid))
         assignments_by_emp.setdefault(emp, {})[day] = sid
         assignment_details[(emp, day)] = {
@@ -804,9 +1091,13 @@ def assegnazione_tight_capacity(
             'extra_slots': set(),
             'ot_direction': None,
             'forced': forced,
+            'out_of_range': is_out_of_range,
         }
         if forced:
             forced_records.add((emp, day))
+        remaining_duration_counts[emp][duration_needed] -= 1
+        if is_out_of_range:
+            out_of_range_used[emp] += 1
         days_done[emp] += 1
         assigned_once.add((emp, day))
         day_assignments_count[day] += 1
@@ -833,6 +1124,10 @@ def assegnazione_tight_capacity(
         minute_distribution[start_minute % 60] -= 1
         if day in weekend_days and day in weekend_work.get(emp, set()):
             weekend_work[emp].discard(day)
+        duration = int(shift_duration_min.get(sid, shift_end_min[sid] - shift_start_min[sid]))
+        remaining_duration_counts[emp][duration] += 1
+        if meta and meta.get('out_of_range'):
+            out_of_range_used[emp] = max(0, out_of_range_used[emp] - 1)
         for slot in shift_slots.get(sid, []):
             update_coverage(day, slot, -1)
         if meta:
@@ -865,6 +1160,8 @@ def assegnazione_tight_capacity(
             if (emp, day) in assigned_once:
                 continue
             for sid in shift_by_emp.get(emp, []):
+                if not can_use_shift(emp, sid):
+                    continue
                 val = shift_value(emp, day, sid, allow_overcapacity=True, force_any=force_balance)
                 if val <= -1e4:
                     continue
@@ -920,6 +1217,8 @@ def assegnazione_tight_capacity(
             best = None
             best_sid = None
             for sid in shift_by_emp.get(emp, []):
+                if not can_use_shift(emp, sid):
+                    continue
                 val = shift_value(emp, day, sid)
                 key = (val, -shift_start_min[sid])
                 if best is None or key > best:
@@ -939,17 +1238,30 @@ def assegnazione_tight_capacity(
                 demand = demand_by_slot[day].get(slot, 0.0)
                 current = current_coverage[day][slot]
                 if demand > 0 and current < demand:
-                    critical_gaps.append((demand - current, day, slot))
+                    # PRIORITÀ PROPORZIONALE: chi è più scoperto in % ha priorità
+                    coverage_ratio = current / demand  # 0.0 = scoperto, 1.0 = coperto
+                    gap_absolute = demand - current
+
+                    # Bonus weekend per parità di copertura
+                    day_bonus = 0.15 if day == 'Dom' else 0.10 if day == 'Sab' else 0.0
+
+                    # Priorità inversamente proporzionale alla copertura
+                    # (1 - coverage_ratio) = quanto manca in percentuale
+                    priority = (1.0 - coverage_ratio) + day_bonus
+
+                    critical_gaps.append((priority, gap_absolute, day, slot))
         critical_gaps.sort(reverse=True)
 
         progressed = False
         # Aumentato da 20 a 100 per considerare più gap critici (es. ultima fascia con domanda bassa)
-        for _, day, target_slot in critical_gaps[:100]:
+        for _, _, day, target_slot in critical_gaps[:100]:
             candidates = []
             for emp in remaining_people():
                 if (emp, day) in assigned_once or day in forced_off.get(emp, set()):
                     continue
                 for sid in shift_by_emp.get(emp, []):
+                    if not can_use_shift(emp, sid):
+                        continue
                     if target_slot not in shift_slots.get(sid, []):
                         continue
                     val = shift_value(emp, day, sid)
@@ -982,10 +1294,24 @@ def assegnazione_tight_capacity(
                 if day in weekend_days and len(weekend_work[emp]) > min_week:
                     continue
                 for sid in shift_by_emp.get(emp, []):
+                    if not can_use_shift(emp, sid):
+                        continue
                     val = shift_value(emp, day, sid, allow_overcapacity=True)
                     if val <= -1e4:
                         continue
-                    key = (val, -shift_start_min[sid])
+                    # Calcola priorità basata sulla copertura percentuale del giorno
+                    day_demand = sum(demand_by_slot[day].values())
+                    day_current = sum(current_coverage[day].values())
+                    coverage_ratio = day_current / day_demand if day_demand > 0 else 1.0
+
+                    # Bonus per giorno più scoperto + piccolo bonus weekend
+                    day_bonus = (1.0 - coverage_ratio) * 100
+                    if day == 'Dom':
+                        day_bonus += 20
+                    elif day == 'Sab':
+                        day_bonus += 15
+
+                    key = (val + day_bonus, -shift_start_min[sid])
                     if best is None or key > best:
                         best = key
                         best_day = day
@@ -1010,45 +1336,127 @@ def assegnazione_tight_capacity(
             break
 
     def rebalance_weekends():
+        """
+        Riequilibra weekend spostando da chi ha Sab+Dom a chi ha 0 weekend.
+        VERSIONE FLESSIBILE: Cerca QUALSIASI turno compatibile, non solo lo stesso.
+        """
         changed = True
-        while changed:
+        iterations = 0
+        max_iterations = 100
+        total_swaps = 0
+
+        while changed and iterations < max_iterations:
             changed = False
+            iterations += 1
+
             double = [emp for emp in ris['id dipendente'] if len(weekend_work[emp]) >= 2]
             zero = [emp for emp in ris['id dipendente'] if len(weekend_work[emp]) == 0 and assignments_by_emp[emp]]
+
+            if iterations == 1:
+                print(f"   → {len(double)} operatori con ≥2 weekend, {len(zero)} con 0 weekend")
+
             if not double or not zero:
+                if iterations == 1:
+                    print(f"   ⚠️  Impossibile bilanciare: double={len(double)}, zero={len(zero)}")
                 break
+
+            # DEBUG: Contatori per capire perché gli swap falliscono
+            fail_reasons = {
+                'forced_off': 0,
+                'no_weekend_shifts': 0,
+                'no_weekday_shifts': 0,
+                'no_valid_swap': 0
+            }
+
             for emp in double:
                 swapped = False
                 weekend_days_emp = sorted([d for d in weekend_days if d in assignments_by_emp[emp]])
+
                 for wday in weekend_days_emp:
                     sid_w = assignments_by_emp[emp][wday]
+
                     for cand in zero:
                         if len(weekend_work[cand]) != 0:
                             continue
                         if wday in forced_off.get(cand, set()):
+                            fail_reasons['forced_off'] += 1
                             continue
-                        if sid_w not in shift_by_emp.get(cand, []):
+
+                        # FLESSIBILITÀ: Cerca QUALSIASI turno disponibile per cand nel giorno weekend
+                        # Non richiede più che sia esattamente sid_w
+                        cand_weekend_shifts = [s for s in shift_by_emp.get(cand, [])
+                                               if s in shift_slots]  # Qualsiasi turno valido
+
+                        if not cand_weekend_shifts:
+                            fail_reasons['no_weekend_shifts'] += 1
                             continue
+
+                        # Prova con il turno originale se disponibile, altrimenti prendi il primo
+                        if sid_w in cand_weekend_shifts:
+                            sid_for_cand = sid_w
+                        else:
+                            sid_for_cand = cand_weekend_shifts[0]
+
+                        # Cerca un giorno infrasettimanale del candidato da scambiare
+                        found_valid_weekday = False
                         for day_cand, sid_cand in list(assignments_by_emp[cand].items()):
                             if day_cand in weekend_days:
                                 continue
                             if day_cand in forced_off.get(emp, set()):
                                 continue
-                            if sid_cand not in shift_by_emp.get(emp, []):
+
+                            # FLESSIBILITÀ: Cerca QUALSIASI turno disponibile per emp nel giorno infrasettimanale
+                            emp_weekday_shifts = [s for s in shift_by_emp.get(emp, [])
+                                                  if s in shift_slots]
+
+                            if not emp_weekday_shifts:
                                 continue
+
+                            found_valid_weekday = True
+
+                            # Prova con il turno originale se disponibile, altrimenti prendi il primo
+                            if sid_cand in emp_weekday_shifts:
+                                sid_for_emp = sid_cand
+                            else:
+                                sid_for_emp = emp_weekday_shifts[0]
+
+                            # Esegui lo swap
                             remove_assignment(emp, wday)
                             remove_assignment(cand, day_cand)
-                            apply_assignment(cand, wday, sid_w)
-                            apply_assignment(emp, day_cand, sid_cand)
+                            if not can_use_shift(cand, sid_for_cand) or not can_use_shift(emp, sid_for_emp):
+                                apply_assignment(emp, wday, sid_w)
+                                apply_assignment(cand, day_cand, sid_cand)
+                                fail_reasons['no_weekday_shifts'] += 1
+                                continue
+                            apply_assignment(cand, wday, sid_for_cand)
+                            apply_assignment(emp, day_cand, sid_for_emp)
+                            total_swaps += 1
+                            if total_swaps <= 5:  # Mostra solo i primi 5
+                                print(f"   ✓ Swap #{total_swaps}: {emp} {wday}↔{cand} {day_cand}")
                             swapped = True
                             changed = True
                             break
+
+                        # Se non trovato valid weekday, conta come fallimento
+                        if not found_valid_weekday:
+                            fail_reasons['no_weekday_shifts'] += 1
+
                         if swapped:
                             break
                     if swapped:
                         break
                 if changed:
                     break
+
+            # Stampa statistiche failure se non ci sono stati swap
+            if iterations == 1 and total_swaps == 0 and (fail_reasons['forced_off'] > 0 or fail_reasons['no_weekend_shifts'] > 0):
+                print(f"   ⚠️  Nessuno swap possibile. Motivi:")
+                if fail_reasons['forced_off'] > 0:
+                    print(f"      - {fail_reasons['forced_off']} tentativi bloccati da forced_off")
+                if fail_reasons['no_weekend_shifts'] > 0:
+                    print(f"      - {fail_reasons['no_weekend_shifts']} candidati senza turni weekend disponibili")
+                if fail_reasons['no_weekday_shifts'] > 0:
+                    print(f"      - {fail_reasons['no_weekday_shifts']} candidati senza turni infrasettimanali validi")
 
     rebalance_weekends()
 
@@ -1121,6 +1529,8 @@ def assegnazione_tight_capacity(
                     continue  # CRITICO: NON violare riposi obbligatori!
 
                 for sid in shift_by_emp.get(emp, []):
+                    if not can_use_shift(emp, sid):
+                        continue
                     if slot in shift_slots.get(sid, []):
                         # Calcola score anche se può causare overcap
                         val = shift_value(emp, day, sid, allow_overcapacity=True, force_any=True)
@@ -1710,7 +2120,16 @@ def assegnazione_tight_capacity(
             candidate = None
 
             # Cerca dipendenti per swap, priorità a chi ha meno weekend
-            max_weekend_allowed = 1 if iteration < max_iter // 2 else 2
+            # MODIFICA: Aumenta più velocemente il limite per garantire presidio
+            # Prima 50 iter: max=1, poi 50: max=2, poi: max=3, infine: nessun limite
+            if iteration < 50:
+                max_weekend_allowed = 1
+            elif iteration < 100:
+                max_weekend_allowed = 2
+            elif iteration < 200:
+                max_weekend_allowed = 3
+            else:
+                max_weekend_allowed = 999  # Nessun limite: presidio > bilanciamento
 
             for emp in sorted(ris['id dipendente'], key=lambda e: (len(weekend_work[e]), days_done[e])):
                 if (emp, target_day) in assigned_once:
@@ -1727,25 +2146,47 @@ def assegnazione_tight_capacity(
                     if day_existing == target_day or day_existing in weekend_days:
                         continue
 
-                    # NUOVA LOGICA: Permetti rimozione se dopo c'è ALMENO 1 persona su quella fascia
+                    # NUOVA LOGICA: Permetti rimozione se target è più critico del source
                     can_remove = True
-                    min_coverage_after = float('inf')
+
+                    # Calcola se target_day (Sabato/Domenica) ha copertura zero
+                    target_has_zero_coverage = False
+                    for s in shift_slots[sid_existing]:
+                        target_coverage = current_coverage[target_day].get(s, 0)
+                        target_demand = demand_by_slot[target_day].get(s, 0.0)
+                        if target_demand > 0 and target_coverage == 0:
+                            target_has_zero_coverage = True
+                            break
 
                     for s in shift_slots[sid_existing]:
                         coverage_after = current_coverage[day_existing][s] - 1
                         demand = demand_by_slot[day_existing].get(s, 0.0)
 
-                        # Se rimuovendo si scende a 0 persone su fascia con requisiti > 0 → BLOCCO
+                        # MODIFICA CRITICA: Permetti che source vada a 0 SE target è completamente scoperto
+                        # Priorità: presidio weekend > mantenere copertura infrasettimanale
                         if demand > 0 and coverage_after <= 0:
-                            can_remove = False
-                            break
-
-                        min_coverage_after = min(min_coverage_after, coverage_after)
+                            if not target_has_zero_coverage:
+                                # Target non è critico, mantieni vincolo
+                                can_remove = False
+                                break
+                            # Altrimenti: target è a 0, permetti swap anche se source va a 0
 
                     if can_remove:
-                        # Preferisci rimuovere turni che lasciano più copertura residua
-                        if best_removal_score is None or min_coverage_after > best_removal_score:
-                            best_removal_score = min_coverage_after
+                        # Calcola rapporto copertura/requisiti MEDIO del giorno DOPO la rimozione
+                        # Preferisci rimuovere da giorni più sovra-coperti (proporzionalmente)
+                        ratios_after = []
+                        for s in shift_slots[sid_existing]:
+                            coverage_after = current_coverage[day_existing][s] - 1
+                            demand = demand_by_slot[day_existing].get(s, 0.0)
+                            if demand > 0:
+                                ratio = coverage_after / demand
+                                ratios_after.append(ratio)
+
+                        # Score = rapporto medio (più alto = più sovra-coperto)
+                        avg_ratio_after = sum(ratios_after) / len(ratios_after) if ratios_after else 0
+
+                        if best_removal_score is None or avg_ratio_after > best_removal_score:
+                            best_removal_score = avg_ratio_after
                             removable = (day_existing, sid_existing)
 
                 if removable is None:
@@ -1756,15 +2197,16 @@ def assegnazione_tight_capacity(
                     if slot not in shift_slots.get(sid_new, []):
                         continue
 
-                    # VERIFICA CRITICA: il nuovo turno NON deve coprire slot a zero requisiti
-                    covers_zero_slot = False
+                    # MODIFICA: Permetti turni che coprono ALMENO 1 slot con domanda > 0
+                    # anche se sbordano su slot a zero requisiti (es. serale che va oltre orario)
+                    covers_needed_slot = False
                     for s in shift_slots.get(sid_new, []):
-                        if demand_by_slot[target_day].get(s, 0.0) <= 0:
-                            covers_zero_slot = True
+                        if demand_by_slot[target_day].get(s, 0.0) > 0:
+                            covers_needed_slot = True
                             break
 
-                    if covers_zero_slot:
-                        continue  # Salta questo turno, cerca altro
+                    if not covers_needed_slot:
+                        continue  # Salta solo turni che NON coprono NESSUNA fascia necessaria
 
                     candidate = (emp, day_remove, sid_remove, sid_new)
                     break
@@ -1779,6 +2221,9 @@ def assegnazione_tight_capacity(
             emp, day_remove, sid_remove, sid_new = candidate
             print(f"   → Swap: {emp} {day_remove}→Sab (gap infrasettimanale accettato per presidio)")
             remove_assignment(emp, day_remove)
+            if not can_use_shift(emp, sid_new):
+                apply_assignment(emp, day_remove, sid_remove)
+                continue
             apply_assignment(emp, target_day, sid_new)
 
     def fill_sunday_gap(max_iter=500):
@@ -1808,7 +2253,16 @@ def assegnazione_tight_capacity(
             candidate = None
 
             # Cerca dipendenti per swap, priorità a chi ha meno weekend
-            max_weekend_allowed = 1 if iteration < max_iter // 2 else 2
+            # MODIFICA: Aumenta più velocemente il limite per garantire presidio
+            # Prima 50 iter: max=1, poi 50: max=2, poi: max=3, infine: nessun limite
+            if iteration < 50:
+                max_weekend_allowed = 1
+            elif iteration < 100:
+                max_weekend_allowed = 2
+            elif iteration < 200:
+                max_weekend_allowed = 3
+            else:
+                max_weekend_allowed = 999  # Nessun limite: presidio > bilanciamento
 
             for emp in sorted(ris['id dipendente'], key=lambda e: (len(weekend_work[e]), days_done[e])):
                 if (emp, target_day) in assigned_once:
@@ -1825,25 +2279,47 @@ def assegnazione_tight_capacity(
                     if day_existing == target_day or day_existing in weekend_days:
                         continue
 
-                    # NUOVA LOGICA: Permetti rimozione se dopo c'è ALMENO 1 persona su quella fascia
+                    # NUOVA LOGICA: Permetti rimozione se target è più critico del source
                     can_remove = True
-                    min_coverage_after = float('inf')
+
+                    # Calcola se target_day (Sabato/Domenica) ha copertura zero
+                    target_has_zero_coverage = False
+                    for s in shift_slots[sid_existing]:
+                        target_coverage = current_coverage[target_day].get(s, 0)
+                        target_demand = demand_by_slot[target_day].get(s, 0.0)
+                        if target_demand > 0 and target_coverage == 0:
+                            target_has_zero_coverage = True
+                            break
 
                     for s in shift_slots[sid_existing]:
                         coverage_after = current_coverage[day_existing][s] - 1
                         demand = demand_by_slot[day_existing].get(s, 0.0)
 
-                        # Se rimuovendo si scende a 0 persone su fascia con requisiti > 0 → BLOCCO
+                        # MODIFICA CRITICA: Permetti che source vada a 0 SE target è completamente scoperto
+                        # Priorità: presidio weekend > mantenere copertura infrasettimanale
                         if demand > 0 and coverage_after <= 0:
-                            can_remove = False
-                            break
-
-                        min_coverage_after = min(min_coverage_after, coverage_after)
+                            if not target_has_zero_coverage:
+                                # Target non è critico, mantieni vincolo
+                                can_remove = False
+                                break
+                            # Altrimenti: target è a 0, permetti swap anche se source va a 0
 
                     if can_remove:
-                        # Preferisci rimuovere turni che lasciano più copertura residua
-                        if best_removal_score is None or min_coverage_after > best_removal_score:
-                            best_removal_score = min_coverage_after
+                        # Calcola rapporto copertura/requisiti MEDIO del giorno DOPO la rimozione
+                        # Preferisci rimuovere da giorni più sovra-coperti (proporzionalmente)
+                        ratios_after = []
+                        for s in shift_slots[sid_existing]:
+                            coverage_after = current_coverage[day_existing][s] - 1
+                            demand = demand_by_slot[day_existing].get(s, 0.0)
+                            if demand > 0:
+                                ratio = coverage_after / demand
+                                ratios_after.append(ratio)
+
+                        # Score = rapporto medio (più alto = più sovra-coperto)
+                        avg_ratio_after = sum(ratios_after) / len(ratios_after) if ratios_after else 0
+
+                        if best_removal_score is None or avg_ratio_after > best_removal_score:
+                            best_removal_score = avg_ratio_after
                             removable = (day_existing, sid_existing)
 
                 if removable is None:
@@ -1854,15 +2330,16 @@ def assegnazione_tight_capacity(
                     if slot not in shift_slots.get(sid_new, []):
                         continue
 
-                    # VERIFICA CRITICA: il nuovo turno NON deve coprire slot a zero requisiti
-                    covers_zero_slot = False
+                    # MODIFICA: Permetti turni che coprono ALMENO 1 slot con domanda > 0
+                    # anche se sbordano su slot a zero requisiti (es. serale che va oltre orario)
+                    covers_needed_slot = False
                     for s in shift_slots.get(sid_new, []):
-                        if demand_by_slot[target_day].get(s, 0.0) <= 0:
-                            covers_zero_slot = True
+                        if demand_by_slot[target_day].get(s, 0.0) > 0:
+                            covers_needed_slot = True
                             break
 
-                    if covers_zero_slot:
-                        continue  # Salta questo turno, cerca altro
+                    if not covers_needed_slot:
+                        continue  # Salta solo turni che NON coprono NESSUNA fascia necessaria
 
                     candidate = (emp, day_remove, sid_remove, sid_new)
                     break
@@ -1877,6 +2354,9 @@ def assegnazione_tight_capacity(
             emp, day_remove, sid_remove, sid_new = candidate
             print(f"   → Swap: {emp} {day_remove}→Dom (gap infrasettimanale accettato per presidio)")
             remove_assignment(emp, day_remove)
+            if not can_use_shift(emp, sid_new):
+                apply_assignment(emp, day_remove, sid_remove)
+                continue
             apply_assignment(emp, target_day, sid_new)
 
     def fill_all_critical_gaps(max_iter=500):
@@ -1892,22 +2372,36 @@ def assegnazione_tight_capacity(
             days_with_gaps = []
             for day in giorni_validi:
                 gap_data = [
-                    (slot, demand_by_slot[day].get(slot, 0.0) - current_coverage[day][slot])
+                    (slot, demand_by_slot[day].get(slot, 0.0), current_coverage[day][slot])
                     for slot in slot_list
                 ]
-                positive_slots = [slot for slot, gap in gap_data if gap > 0.1]
-                total_gap = sum(gap for _, gap in gap_data if gap > 0.1)
+                positive_slots = [slot for slot, demand, current in gap_data if demand > 0 and current < demand]
+
+                if not positive_slots:
+                    continue
+
+                # Calcola copertura percentuale media del giorno
+                total_demand = sum(d for _, d, c in gap_data if d > 0 and c < d)
+                total_current = sum(c for _, d, c in gap_data if d > 0 and c < d)
+                total_gap = total_demand - total_current
 
                 if total_gap > 0.1:
-                    days_with_gaps.append((total_gap, day, positive_slots[0] if positive_slots else None))
+                    # PRIORITÀ PROPORZIONALE: copertura % del giorno
+                    coverage_ratio = total_current / total_demand if total_demand > 0 else 1.0
+
+                    # Bonus weekend per parità di copertura
+                    day_bonus = 0.15 if day == 'Dom' else 0.10 if day == 'Sab' else 0.0
+
+                    priority = (1.0 - coverage_ratio) + day_bonus
+                    days_with_gaps.append((priority, total_gap, day, positive_slots[0]))
 
             if not days_with_gaps:
                 print(f"   ✓ Tutti i giorni coperti")
                 break
 
-            # Ordina per gap decrescente (priorità a giorni più scoperti)
+            # Ordina per priorità proporzionale, poi gap assoluto
             days_with_gaps.sort(reverse=True)
-            total_gap_value, target_day, target_slot = days_with_gaps[0]
+            _, total_gap_value, target_day, target_slot = days_with_gaps[0]
 
             if target_slot is None:
                 break
@@ -1916,11 +2410,25 @@ def assegnazione_tight_capacity(
 
             candidate = None
 
+            # BILANCIAMENTO WEEKEND: Limite progressivo come fill_saturday/sunday_gap
+            # Solo per target_day weekend, altrimenti nessun limite
+            if target_day in weekend_days:
+                if iteration < 100:
+                    max_weekend_allowed = 1
+                elif iteration < 250:
+                    max_weekend_allowed = 2
+                else:
+                    max_weekend_allowed = 999  # Presidio > bilanciamento
+            else:
+                max_weekend_allowed = 999  # Nessun limite per giorni infrasettimanali
+
             for emp in sorted(ris['id dipendente'], key=lambda e: (len(weekend_work[e]), days_done[e])):
                 if (emp, target_day) in assigned_once:
                     continue
                 if target_day in forced_off.get(emp, set()):
                     continue
+                if target_day in weekend_days and len(weekend_work[emp]) >= max_weekend_allowed:
+                    continue  # Applica limite solo per target weekend
 
                 removable = None
                 best_removal_score = None
@@ -1929,26 +2437,52 @@ def assegnazione_tight_capacity(
                     if day_existing == target_day:
                         continue
 
-                    # NUOVA LOGICA: Permetti rimozione se dopo c'è ALMENO 1 persona su quella fascia
-                    # (invece di limite arbitrario di gap)
+                    # BILANCIAMENTO WEEKEND: Non spostare DA weekend A weekend
+                    # Evita di creare sbilanciamenti (es. togliere Sab per mettere Dom)
+                    if day_existing in weekend_days and target_day in weekend_days:
+                        continue
+
+                    # NUOVA LOGICA: Permetti rimozione se target è più critico del source
                     can_remove = True
-                    min_coverage_after = float('inf')
+
+                    # Calcola se target_day ha copertura zero su questi slot
+                    target_has_zero_coverage = False
+                    for s in shift_slots[sid_existing]:
+                        target_coverage = current_coverage[target_day].get(s, 0)
+                        target_demand = demand_by_slot[target_day].get(s, 0.0)
+                        if target_demand > 0 and target_coverage == 0:
+                            target_has_zero_coverage = True
+                            break
 
                     for s in shift_slots[sid_existing]:
                         coverage_after = current_coverage[day_existing][s] - 1
                         demand = demand_by_slot[day_existing].get(s, 0.0)
 
-                        # Se rimuovendo questo turno si scende a 0 persone su una fascia con requisiti > 0
+                        # MODIFICA CRITICA: Permetti che source vada a 0 SE target è completamente scoperto
+                        # Priorità: coprire fasce a zero > mantenere copertura esistente
                         if demand > 0 and coverage_after <= 0:
-                            can_remove = False  # BLOCCO: violerebbe presidio
-                            break
-
-                        min_coverage_after = min(min_coverage_after, coverage_after)
+                            if not target_has_zero_coverage:
+                                # Target non è critico, mantieni vincolo
+                                can_remove = False
+                                break
+                            # Altrimenti: target è a 0, permetti swap anche se source va a 0
 
                     if can_remove:
-                        # Preferisci rimuovere turni che lasciano più copertura residua
-                        if best_removal_score is None or min_coverage_after > best_removal_score:
-                            best_removal_score = min_coverage_after
+                        # Calcola rapporto copertura/requisiti MEDIO del giorno DOPO la rimozione
+                        # Preferisci rimuovere da giorni più sovra-coperti (proporzionalmente)
+                        ratios_after = []
+                        for s in shift_slots[sid_existing]:
+                            coverage_after = current_coverage[day_existing][s] - 1
+                            demand = demand_by_slot[day_existing].get(s, 0.0)
+                            if demand > 0:
+                                ratio = coverage_after / demand
+                                ratios_after.append(ratio)
+
+                        # Score = rapporto medio (più alto = più sovra-coperto)
+                        avg_ratio_after = sum(ratios_after) / len(ratios_after) if ratios_after else 0
+
+                        if best_removal_score is None or avg_ratio_after > best_removal_score:
+                            best_removal_score = avg_ratio_after
                             removable = (day_existing, sid_existing)
 
                 if removable is None:
@@ -1959,15 +2493,16 @@ def assegnazione_tight_capacity(
                     if target_slot not in shift_slots.get(sid_new, []):
                         continue
 
-                    # VERIFICA CRITICA: il nuovo turno NON deve coprire slot a zero requisiti
-                    covers_zero_slot = False
+                    # MODIFICA: Permetti turni che coprono ALMENO 1 slot con domanda > 0
+                    # anche se sbordano su slot a zero requisiti (es. serale che va oltre orario)
+                    covers_needed_slot = False
                     for s in shift_slots.get(sid_new, []):
-                        if demand_by_slot[target_day].get(s, 0.0) <= 0:
-                            covers_zero_slot = True
+                        if demand_by_slot[target_day].get(s, 0.0) > 0:
+                            covers_needed_slot = True
                             break
 
-                    if covers_zero_slot:
-                        continue  # Salta questo turno, cerca altro
+                    if not covers_needed_slot:
+                        continue  # Salta solo turni che NON coprono NESSUNA fascia necessaria
 
                     candidate = (emp, day_remove, sid_remove, sid_new)
                     break
@@ -1982,13 +2517,173 @@ def assegnazione_tight_capacity(
             emp, day_remove, sid_remove, sid_new = candidate
             print(f"   → Swap: {emp} {day_remove}→{target_day}")
             remove_assignment(emp, day_remove)
+            if not can_use_shift(emp, sid_new):
+                apply_assignment(emp, day_remove, sid_remove)
+                continue
             apply_assignment(emp, target_day, sid_new)
 
     # PRIORITÀ ASSOLUTA: Garantire presidio su TUTTE le fasce
     fill_all_critical_gaps()  # Swap per tutti i giorni con gap
+
+    # Riequilibra weekend dopo fill_all_critical_gaps
+    print("\n♻️  Riequilibrio weekend post-fill_all_critical_gaps...")
+    rebalance_weekends()
+
     fill_saturday_gap()       # Extra focus su sabato
     fill_sunday_gap()         # Extra focus su domenica
+
+    # Riequilibra weekend dopo fill_saturday/sunday_gap
+    print("\n♻️  Riequilibrio weekend post-fill_saturday/sunday_gap...")
+    rebalance_weekends()
+
     ensure_required_days()
+
+    def rebalance_proportional_coverage(max_iter=100):
+        """
+        RIEQUILIBRIO PROPORZIONALE POST-FILL:
+        Dopo i fill_gap, bilancia la copertura infrasettimanale proporzionalmente ai requisiti.
+        Sposta persone da giorni sovra-coperti (ratio > 1.3) a sotto-coperti (ratio < 0.8).
+        NON tocca weekend (già ottimizzato dai fill_gap).
+        """
+        print("\n🔄 RIEQUILIBRIO PROPORZIONALE - Bilanciamento finale infrasettimanale...")
+
+        weekday_only = ['Lun', 'Mar', 'Mer', 'Gio', 'Ven']
+
+        for iteration in range(max_iter):
+            # Calcola ratio coverage/demand per ogni giorno infrasettimanale
+            day_ratios = {}
+            for day in weekday_only:
+                total_demand = sum(demand_by_slot[day].values())
+                total_coverage = sum(current_coverage[day].values())
+                if total_demand > 0:
+                    day_ratios[day] = total_coverage / total_demand
+                else:
+                    day_ratios[day] = 1.0
+
+            # Trova giorno più sovra-coperto
+            most_over = max(day_ratios.keys(), key=lambda d: day_ratios[d])
+            max_ratio = day_ratios[most_over]
+
+            # Trova giorno più sotto-coperto
+            most_under = min(day_ratios.keys(), key=lambda d: day_ratios[d])
+            min_ratio = day_ratios[most_under]
+
+            # Se differenza < 30%, stop (bilanciamento accettabile)
+            diff = max_ratio - min_ratio
+            if diff < 0.3:
+                print(f"   ✓ Bilanciamento accettabile (max diff: {diff:.1%})")
+                break
+
+            print(f"   Iter {iteration+1}: {most_over} {max_ratio:.0%} → {most_under} {min_ratio:.0%} (diff: {diff:.1%})")
+
+            # Prova swap: persona da most_over → most_under
+            swapped = False
+
+            # Cerca dipendente assegnato a most_over
+            candidates = []
+            for emp in ris['id dipendente']:
+                if most_over not in assignments_by_emp[emp]:
+                    continue
+                if (emp, most_under) in assigned_once:
+                    continue  # Già assegnato a most_under
+                if most_under in forced_off.get(emp, set()):
+                    continue  # Vietato in most_under
+
+                # BILANCIAMENTO WEEKEND: Evita di spostare persone con entrambi i weekend assegnati
+                # per preservare il bilanciamento weekend fatto da rebalance_weekends()
+                weekend_days_assigned = [d for d in ['Sab', 'Dom'] if d in assignments_by_emp[emp]]
+                if len(weekend_days_assigned) >= 2:
+                    continue  # Ha entrambi i weekend, preserva questo operatore
+
+                sid_over = assignments_by_emp[emp][most_over]
+
+                # Verifica che rimuovendo da most_over non si vada a 0 su fasce critiche
+                can_remove = True
+                min_coverage_after = float('inf')
+
+                for s in shift_slots[sid_over]:
+                    coverage_after = current_coverage[most_over][s] - 1
+                    demand = demand_by_slot[most_over].get(s, 0.0)
+
+                    # VINCOLO: Non portare a 0 fasce con domanda > 0 (a meno che most_under sia a 0)
+                    if demand > 0 and coverage_after <= 0:
+                        # Verifica se most_under è critico (a zero)
+                        under_is_critical = False
+                        for s2 in shift_slots.get(sid_over, []):
+                            if demand_by_slot[most_under].get(s2, 0.0) > 0 and current_coverage[most_under][s2] == 0:
+                                under_is_critical = True
+                                break
+
+                        if not under_is_critical:
+                            can_remove = False
+                            break
+
+                    min_coverage_after = min(min_coverage_after, coverage_after)
+
+                if not can_remove:
+                    continue
+
+                # Verifica che emp abbia un turno disponibile per most_under
+                matching_shifts = []
+                for sid_new in shift_by_emp.get(emp, []):
+                    # Il turno deve coprire almeno 1 slot con domanda > 0 in most_under
+                    covers_needed = False
+                    for s in shift_slots.get(sid_new, []):
+                        if demand_by_slot[most_under].get(s, 0.0) > 0:
+                            covers_needed = True
+                            break
+                    if covers_needed:
+                        matching_shifts.append(sid_new)
+
+                if not matching_shifts:
+                    continue
+
+                # Calcola beneficio dello swap
+                benefit = (max_ratio - 1.0) + (1.0 - min_ratio)  # Quanto migliora il bilanciamento
+
+                # PRIORITÀ: Preferisci spostare chi ha meno giorni di weekend
+                # Questo preserva meglio il bilanciamento weekend
+                weekend_penalty = len(weekend_days_assigned) * 0.5  # Penalità per ogni giorno weekend
+
+                candidates.append((benefit - weekend_penalty, min_coverage_after, emp, sid_over, matching_shifts[0]))
+
+            if not candidates:
+                print(f"   ⚠️  Impossibile swap {most_over}→{most_under} (nessun candidato)")
+                break
+
+            # Prendi migliore candidato (massimo beneficio, mantiene più copertura)
+            candidates.sort(reverse=True)
+            _, _, emp, sid_over, sid_new = candidates[0]
+
+            # Verifica weekend per log
+            emp_weekends = [d for d in ['Sab', 'Dom'] if d in assignments_by_emp[emp]]
+            weekend_info = f" (weekend: {','.join(emp_weekends) if emp_weekends else 'nessuno'})" if emp_weekends else ""
+
+            # Esegui swap
+            print(f"   → Swap: {emp} {most_over}→{most_under}{weekend_info}")
+            remove_assignment(emp, most_over)
+            if not can_use_shift(emp, sid_new):
+                apply_assignment(emp, most_over, sid_over)
+                continue
+            apply_assignment(emp, most_under, sid_new)
+            swapped = True
+
+        # Report finale
+        print("\n📊 BILANCIAMENTO FINALE INFRASETTIMANALE:")
+        for day in weekday_only:
+            total_demand = sum(demand_by_slot[day].values())
+            total_coverage = sum(current_coverage[day].values())
+            if total_demand > 0:
+                ratio = total_coverage / total_demand
+                status = "✓" if 0.8 <= ratio <= 1.3 else "⚠️"
+                print(f"   {status} {day}: {ratio:.0%} coperto (domanda: {total_demand:.0f}, copertura: {total_coverage:.0f})")
+
+    rebalance_proportional_coverage()
+
+    # PULIZIA FINALE: Riequilibra weekend dopo tutti i riempimenti e bilanciamenti
+    # Le funzioni fill_gap potrebbero aver creato sbilanciamenti in scenari difficili
+    print("\n♻️  PULIZIA FINALE - Riequilibrio weekend post-fill...")
+    rebalance_weekends()
 
     # ENFORCE CRITICAL COVERAGE viene eseguito DOPO fill_gap per dare priorità agli swap
     enforce_critical_coverage()
@@ -2074,12 +2769,28 @@ def assegnazione_tight_capacity(
             violations.append(f"⛔ {emp}: lavora {actual_days} giorni ma dovrebbe lavorare MAX {required_days} (riposi violati!)")
             infeasible.append((emp, f"VIOLAZIONE RIPOSI: lavora {actual_days} giorni invece di {required_days}"))
 
-    # 2. Verifica ore/giorno (durata turni)
+    # 2. Verifica pattern ore/giorno (durate previste)
+    actual_duration_counts: Dict[str, Counter] = {emp: Counter() for emp in ris['id dipendente']}
     for emp, day, sid in assignments:
-        actual_duration = shift_end_min[sid] - shift_start_min[sid]
-        required_duration = durations_by_emp.get(emp, 240)
-        if actual_duration != required_duration:
-            violations.append(f"⛔ {emp} {day}: turno {actual_duration}min invece di {required_duration}min richiesti")
+        actual_duration = shift_duration_min.get(sid, shift_end_min[sid] - shift_start_min[sid])
+        actual_duration_counts[emp][int(actual_duration)] += 1
+
+    for emp in ris['id dipendente']:
+        expected_counts = expected_duration_counts.get(emp, Counter())
+        actual_counts = actual_duration_counts.get(emp, Counter())
+        for duration, expected_count in expected_counts.items():
+            actual_count = actual_counts.get(duration, 0)
+            if actual_count != expected_count:
+                violations.append(
+                    f"⛔ {emp}: durata {duration}min assegnata {actual_count}/{expected_count} volte"
+                )
+                infeasible.append(
+                    (emp, f"Durate non rispettate: {duration}m attesi {expected_count}, assegnati {actual_count}")
+                )
+        extra = {dur: cnt for dur, cnt in actual_counts.items() if dur not in expected_counts and cnt > 0}
+        for dur, cnt in extra.items():
+            violations.append(f"⛔ {emp}: durata non prevista {dur}m ({cnt} volte)")
+            infeasible.append((emp, f"Durata {dur}m non prevista assegnata {cnt} volte"))
 
     # 3. Verifica straordinario non superi il disponibile
     for emp in ris['id dipendente']:
@@ -2414,6 +3125,8 @@ def main():
                        help='Assegna comunque lo straordinario disponibile anche in overcoverage (se minuti coerenti)')
     parser.add_argument('--force-balance', action='store_true',
                         help='Garantisce i giorni minimi per risorsa anche andando in overcoverage controllato')
+    parser.add_argument('--use-predefined', action='store_true',
+                        help='Usa i turni predefiniti dal foglio Turni invece di generarli automaticamente (supporta turni spezzati)')
     parser.add_argument('--overcap', type=str, default=None,
                         help='Override percentuale overcapacity per giorno (es. "Dom=0,Gio=0.12")')
     parser.add_argument('--overcap-penalty', type=str, default=None,
@@ -2423,8 +3136,24 @@ def main():
     req, turni, ris, cfg = carica_dati(args.input)
     req_pre = prepara_req(req)
 
-    durations_by_emp, rest_target_by_emp, ot_minutes_by_emp, ot_split_by_emp, ot_daily_minutes_by_emp = infer_personal_params_from_risorse(ris)
-    durations_set_min = set(durations_by_emp.values())
+    (
+        durations_by_emp,
+        rest_target_by_emp,
+        ot_minutes_by_emp,
+        ot_split_by_emp,
+        ot_daily_minutes_by_emp,
+        duration_patterns_by_emp,
+        out_of_range_allowance_by_emp,
+    ) = infer_personal_params_from_risorse(ris)
+
+    allowed_durations_by_emp: Dict[str, Set[int]] = {}
+    for emp in ris['id dipendente']:
+        pattern = duration_patterns_by_emp.get(emp)
+        if pattern:
+            allowed_durations_by_emp[emp] = {int(d) for d in pattern}
+        else:
+            allowed_durations_by_emp[emp] = {int(durations_by_emp.get(emp, 240))}
+    durations_set_min = {int(d) for durs in allowed_durations_by_emp.values() for d in durs} or {240}
 
     prefer_tokens = [t.strip() for t in str(args.prefer_phase).split(',') if t.strip()]
     prefer_values = []
@@ -2454,17 +3183,31 @@ def main():
     if args.strict_phase:
         print("INFO: Modalita STRICT PHASE attiva")
 
-    try:
-        turni_cand = genera_turni_candidati(
-            req_pre,
-            durations_set_min,
-            grid_step_min=args.grid,
-            force_phase_minutes=force_minutes
-        )
-    except ValueError as exc:
-        raise SystemExit(str(exc))
-
-    print(f"INFO: Generati {len(turni_cand)} turni candidati")
+    # Scegli se usare turni predefiniti o generarli automaticamente
+    if args.use_predefined:
+        print("INFO: Uso turni predefiniti dal foglio Turni (supporta spezzati)")
+        try:
+            turni_cand = carica_turni_predefiniti(turni)
+        except ValueError as exc:
+            raise SystemExit(str(exc))
+        n_spezzati = turni_cand['is_spezzato'].sum() if 'is_spezzato' in turni_cand.columns else 0
+        print(f"INFO: Caricati {len(turni_cand)} turni predefiniti ({n_spezzati} spezzati)")
+        # Mostra distribuzione durate
+        durate_dist = turni_cand.groupby('durata_min').size().to_dict()
+        print(f"INFO: Distribuzione durate turni predefiniti:")
+        for dur, cnt in sorted(durate_dist.items()):
+            print(f"  {int(dur)}min ({int(dur)//60}h{int(dur)%60:02d}m): {cnt} turni")
+    else:
+        try:
+            turni_cand = genera_turni_candidati(
+                req_pre,
+                durations_set_min,
+                grid_step_min=args.grid,
+                force_phase_minutes=force_minutes
+            )
+        except ValueError as exc:
+            raise SystemExit(str(exc))
+        print(f"INFO: Generati {len(turni_cand)} turni candidati")
     if force_minutes:
         distrib = {}
         for start in turni_cand['start_min']:
@@ -2474,7 +3217,28 @@ def main():
         for minute in sorted(distrib):
             print(f"  :{minute:02d} -> {distrib[minute]}")
 
-    shift_by_emp = determina_turni_ammissibili(ris, turni_cand, durations_by_emp)
+    shift_by_emp, shift_out_of_range, avail_ini_min, avail_end_min = determina_turni_ammissibili(
+        ris,
+        turni_cand,
+        durations_by_emp,
+        allowed_durations_by_emp,
+        out_of_range_allowance_by_emp,
+    )
+
+    # Diagnostica turni ammissibili per dipendente
+    emps_no_shifts = [emp for emp, shifts in shift_by_emp.items() if not shifts]
+    if emps_no_shifts:
+        print(f"\n⚠️  ATTENZIONE: {len(emps_no_shifts)} dipendenti senza turni ammissibili!")
+        # Mostra dettagli per capire il problema
+        for emp in emps_no_shifts[:5]:  # Mostra primi 5
+            emp_dur = durations_by_emp.get(emp, 240)
+            print(f"  • {emp}: richiede {emp_dur}min, disponibili durate: {list(durate_dist.keys()) if args.use_predefined else 'auto'}")
+        if len(emps_no_shifts) > 5:
+            print(f"  ... e altri {len(emps_no_shifts) - 5} dipendenti")
+        print("  → Verifica che le durate nel foglio Turni corrispondano alle ore/giorno dei dipendenti\n")
+    else:
+        print(f"INFO: Tutti i {len(shift_by_emp)} dipendenti hanno turni ammissibili")
+
     forced_off, forced_on = leggi_vincoli_weekend(ris)
 
     prefer_tuple = prefer_phases if prefer_phases else tuple(sorted({0, 15, 30, 45}))
@@ -2494,7 +3258,11 @@ def main():
         prefer_phases=prefer_tuple, strict_phase=args.strict_phase,
         force_balance=args.force_balance,
         overcap_percent_map=overcap_percent_map,
-        overcap_penalty_map=overcap_penalty_map
+        overcap_penalty_map=overcap_penalty_map,
+        duration_patterns_by_emp=duration_patterns_by_emp,
+        allowed_durations_by_emp=allowed_durations_by_emp,
+        shift_out_of_range=shift_out_of_range,
+        out_of_range_allowance_by_emp=out_of_range_allowance_by_emp,
     )
 
     pivot, df_ass, df_cov = crea_output(assignments, turni_cand, ris, req_pre, day_colmap, slot_list, slot_size, shift_slots, assignment_details)
@@ -2502,13 +3270,8 @@ def main():
     turno_map = dict(zip(turni_cand['id turno'], turni_cand['start_min']))
 
     forced_summary = [(emp, day) for (emp, day), meta in assignment_details.items() if meta.get('forced')]
-    start_allowed = {}
-    end_allowed = {}
-    if 'Inizio fascia' in ris.columns and 'Fine fascia' in ris.columns:
-        for _, row in ris.iterrows():
-            emp = row['id dipendente']
-            start_allowed[emp] = _to_minutes(row.get('Inizio fascia'))
-            end_allowed[emp] = _to_minutes(row.get('Fine fascia'))
+    start_allowed = {emp: avail_ini_min.get(emp, 0) for emp in ris['id dipendente']}
+    end_allowed = {emp: avail_end_min.get(emp, 24 * 60) for emp in ris['id dipendente']}
     out_of_range = []
     for (emp, day), meta in assignment_details.items():
         actual_start = int(meta.get('actual_start_min', meta['base_start']))
