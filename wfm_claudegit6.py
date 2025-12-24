@@ -1461,8 +1461,6 @@ def assegnazione_tight_capacity(
     rebalance_weekends()
 
     def ensure_required_days():
-        if not force_balance:
-            return
         attempts = 0
         max_attempts = max(1, len(ris) * 4)
         while True:
@@ -1472,10 +1470,29 @@ def assegnazione_tight_capacity(
             missing.sort(key=lambda e: (days_done[e], len(shift_by_emp.get(e, []))))
             progress = False
             for emp in missing:
-                day_sel, sid_sel = pick_force_assignment(emp)
+                if force_balance:
+                    day_sel, sid_sel = pick_force_assignment(emp)
+                else:
+                    best = None
+                    day_sel = None
+                    sid_sel = None
+                    for day in giorni_validi:
+                        if (emp, day) in assigned_once or day in forced_off.get(emp, set()):
+                            continue
+                        for sid in shift_by_emp.get(emp, []):
+                            if not can_use_shift(emp, sid):
+                                continue
+                            val = shift_value(emp, day, sid, allow_overcapacity=True)
+                            if val <= -1e4:
+                                continue
+                            key = (val, -shift_start_min[sid])
+                            if best is None or key > best:
+                                best = key
+                                day_sel = day
+                                sid_sel = sid
                 if sid_sel is None:
                     continue
-                apply_assignment(emp, day_sel, sid_sel, forced=True)
+                apply_assignment(emp, day_sel, sid_sel, forced=force_balance)
                 progress = True
             if not progress:
                 default_msg = 'Impossibile assegnare il numero di turni richiesto dalle risorse.'
@@ -2767,6 +2784,9 @@ def assegnazione_tight_capacity(
         required_days = work_need[emp]
         if actual_days > required_days:
             violations.append(f"⛔ {emp}: lavora {actual_days} giorni ma dovrebbe lavorare MAX {required_days} (riposi violati!)")
+            infeasible.append((emp, f"VIOLAZIONE RIPOSI: lavora {actual_days} giorni invece di {required_days}"))
+        elif actual_days < required_days:
+            violations.append(f"⛔ {emp}: lavora {actual_days} giorni ma dovrebbe lavorare MIN {required_days} (riposi eccessivi)")
             infeasible.append((emp, f"VIOLAZIONE RIPOSI: lavora {actual_days} giorni invece di {required_days}"))
 
     # 2. Verifica pattern ore/giorno (durate previste)
