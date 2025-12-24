@@ -271,20 +271,32 @@ def map_req_day_columns(req: pd.DataFrame):
 
 # ----------------------------- I/O -----------------------------
 def _seleziona_foglio_requisiti(xls: pd.ExcelFile) -> Tuple[str, Optional[str]]:
-    if 'Requisiti' in xls.sheet_names:
-        return 'Requisiti', None
-    requisiti_sheets = [name for name in xls.sheet_names if name.lower().startswith('requisit_')]
+    for name in xls.sheet_names:
+        if name.strip().lower() == 'requisiti':
+            return name, None
+    requisiti_sheets: list[Tuple[str, str]] = []
+    for name in xls.sheet_names:
+        lowered = name.strip().lower()
+        if not lowered.startswith('requisit'):
+            continue
+        suffix = lowered[len('requisit'):]
+        suffix = suffix.lstrip(" _-").strip()
+        requisiti_sheets.append((name, suffix))
     if not requisiti_sheets:
-        raise ValueError("Nessun foglio requisiti trovato: usa 'Requisiti' oppure 'requisit_<skill>'.")
-    if len(requisiti_sheets) > 1:
+        available = ", ".join(xls.sheet_names)
         raise ValueError(
-            "Trovati più fogli requisiti con prefisso 'requisit_': "
-            + ", ".join(requisiti_sheets)
+            "Nessun foglio requisiti trovato: usa 'Requisiti' oppure 'requisit_<skill>'. "
+            f"Fogli disponibili: {available}"
+        )
+    if len(requisiti_sheets) > 1:
+        found = ", ".join(name for name, _ in requisiti_sheets)
+        raise ValueError(
+            "Trovati più fogli requisiti con prefisso 'requisit': "
+            + found
             + ". Mantienine uno solo per l'esecuzione."
         )
-    sheet_name = requisiti_sheets[0]
-    skill_name = sheet_name[len('requisit_'):].strip()
-    return sheet_name, (skill_name or None)
+    sheet_name, skill_suffix = requisiti_sheets[0]
+    return sheet_name, (skill_suffix or None)
 
 
 def _filtra_risorse_per_skill(ris: pd.DataFrame, skill_name: Optional[str]) -> pd.DataFrame:
