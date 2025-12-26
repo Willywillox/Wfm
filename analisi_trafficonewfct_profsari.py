@@ -63,6 +63,8 @@ import tempfile
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+from matplotlib.figure import Figure
 import time
 warnings.filterwarnings('ignore')
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -332,7 +334,7 @@ def analisi_fascia_oraria(df, output_dir):
     axes[1].legend()
     
     plt.tight_layout()
-    plt.savefig(f'{output_dir}/curva_fascia_oraria.png', dpi=300, bbox_inches='tight')
+    plt.savefig(f'{output_dir}/curva_fascia_oraria.png', dpi=150 if FAST_MODE else 300, bbox_inches='tight')
     print(f"Grafico salvato: curva_fascia_oraria.png")
     
     top_fasce = fascia_stats.nlargest(5, 'MEDIA')[['FASCIA', 'MEDIA', 'TOTALE']]
@@ -373,7 +375,7 @@ def analisi_giorno_settimana(df, output_dir):
     axes[1].grid(axis='y', alpha=0.3)
     
     plt.tight_layout()
-    plt.savefig(f'{output_dir}/curva_giorno_settimana.png', dpi=300, bbox_inches='tight')
+    plt.savefig(f'{output_dir}/curva_giorno_settimana.png', dpi=150 if FAST_MODE else 300, bbox_inches='tight')
     print(f"Grafico salvato: curva_giorno_settimana.png")
     
     return giorno_stats
@@ -410,7 +412,7 @@ def analisi_settimana(df, output_dir):
     axes[1].grid(True, alpha=0.3)
     
     plt.tight_layout()
-    plt.savefig(f'{output_dir}/curva_settimana.png', dpi=300, bbox_inches='tight')
+    plt.savefig(f'{output_dir}/curva_settimana.png', dpi=150 if FAST_MODE else 300, bbox_inches='tight')
     print(f"Grafico salvato: curva_settimana.png")
     
     return week_stats
@@ -437,7 +439,7 @@ def analisi_mese(df, output_dir):
     ax.grid(axis='y', alpha=0.3)
     plt.xticks(rotation=45, ha='right')
     plt.tight_layout()
-    plt.savefig(f'{output_dir}/curva_mese.png', dpi=300, bbox_inches='tight')
+    plt.savefig(f'{output_dir}/curva_mese.png', dpi=150 if FAST_MODE else 300, bbox_inches='tight')
     print(f"Grafico salvato: curva_mese.png")
     
     return mese_stats
@@ -464,7 +466,7 @@ def crea_heatmap(df, output_dir):
     plt.xticks(rotation=90, fontsize=8)
     plt.yticks(rotation=0)
     plt.tight_layout()
-    plt.savefig(f'{output_dir}/heatmap_giorno_fascia.png', dpi=300, bbox_inches='tight')
+    plt.savefig(f'{output_dir}/heatmap_giorno_fascia.png', dpi=150 if FAST_MODE else 300, bbox_inches='tight')
     print(f"Heatmap salvata")
 
 # =============================================================================
@@ -489,7 +491,7 @@ def genera_curve_previsionali(df, output_dir):
     curve['coeff_giornalieri'] = (df.groupby('GG SETT')['OFFERTO'].mean() / media_generale).to_dict()
     
     output_path = Path(output_dir) / 'curve_previsionali.xlsx'
-    with safe_excel_writer(output_path, engine='openpyxl') as (writer, actual_path):
+    with safe_excel_writer(output_path, engine='xlsxwriter') as (writer, actual_path):
         curve['intraday_generale'].to_excel(writer, sheet_name='Curva_Intraday', index=False)
         for giorno in ordine_giorni:
             curve[f'intraday_{giorno}'].to_excel(writer, sheet_name=f'Curva_{giorno.title()}', index=False)
@@ -523,7 +525,7 @@ def analisi_consuntiva_trend(df, output_dir):
     ax.legend()
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
-    plt.savefig(f'{output_dir}/analisi_trend_storico.png', dpi=300, bbox_inches='tight')
+    plt.savefig(f'{output_dir}/analisi_trend_storico.png', dpi=150 if FAST_MODE else 300, bbox_inches='tight')
     print("Grafico salvato: analisi_trend_storico.png")
     
     return daily
@@ -573,7 +575,7 @@ def analisi_confronto_periodi(df, output_dir):
         axes[1].set_visible(False)
 
     plt.tight_layout()
-    plt.savefig(f'{output_dir}/confronto_periodi.png', dpi=300, bbox_inches='tight')
+    plt.savefig(f'{output_dir}/confronto_periodi.png', dpi=150 if FAST_MODE else 300, bbox_inches='tight')
     print('Grafico salvato: confronto_periodi.png')
 
     if len(week_comp) >= 2 and not np.isnan(week_comp['VAR_WEEK'].iloc[-1]):
@@ -645,7 +647,7 @@ def identifica_anomalie(df, output_dir):
     ax.set_ylabel('Chiamate Totali')
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
-    plt.savefig(f"{output_dir}/identificazione_anomalie.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{output_dir}/identificazione_anomalie.png", dpi=150 if FAST_MODE else 300, bbox_inches='tight')
     print("Grafico salvato: identificazione_anomalie.png")
 
     print(f"\nPicchi alti: {len(anomalie_alte)}")
@@ -684,6 +686,178 @@ def identifica_anomalie(df, output_dir):
     print('Riepilogo anomalie salvato: anomalie_riepilogo.txt')
 
     return anomalie_alte, anomalie_basse
+
+
+def _rileva_alert(df, forecast_df, backtest_metrics, output_dir):
+    """
+    Rileva condizioni di alert da mostrare nella GUI.
+
+    Args:
+        df: DataFrame dati storici
+        forecast_df: DataFrame forecast (con colonna FORECAST o modelli)
+        backtest_metrics: dict metriche affidabilità
+        output_dir: cartella output
+
+    Returns:
+        list di dict con:
+            - tipo: 'warning' | 'error' | 'info'
+            - icona: emoji
+            - titolo: stringa breve
+            - descrizione: dettagli
+            - severita: 'alta' | 'media' | 'bassa'
+    """
+    print("\nRILEVAMENTO ALERT AUTOMATICI")
+    print("=" * 80)
+
+    alerts = []
+
+    # 1. Alert: Picchi previsti elevati
+    daily_historical = df.groupby('DATA')['OFFERTO'].sum()
+    media_storica = daily_historical.mean()
+    std_storica = daily_historical.std()
+    soglia_picco = media_storica + 2 * std_storica
+
+    # Trova colonna forecast (priorità: FORECAST, poi prima disponibile)
+    if forecast_df is None or forecast_df.empty:
+        print("⚠️  Nessun forecast disponibile per alert")
+        return alerts
+
+    forecast_col = 'FORECAST' if 'FORECAST' in forecast_df.columns else \
+                   [c for c in forecast_df.columns if c != 'DATA'][0]
+
+    giorni_picco = forecast_df[forecast_df[forecast_col] > soglia_picco]
+    if len(giorni_picco) > 0:
+        max_picco = giorni_picco[forecast_col].max()
+        data_picco = giorni_picco.loc[giorni_picco[forecast_col].idxmax(), 'DATA']
+        pct_over = ((max_picco - media_storica) / media_storica * 100)
+
+        alerts.append({
+            'tipo': 'warning',
+            'icona': '⚠️',
+            'titolo': 'Picco Previsto Elevato',
+            'descrizione': f'{len(giorni_picco)} giorni con picco >20% sopra media storica. '
+                          f'Max: {max_picco:,.0f} chiamate il {data_picco.strftime("%d/%m/%Y")} '
+                          f'(+{pct_over:.1f}% vs media)',
+            'severita': 'alta' if pct_over > 50 else 'media'
+        })
+
+    # 2. Alert: Bassa affidabilità modello
+    if backtest_metrics:
+        # Trova MAPE del miglior modello
+        valid_models = {m: v.get('MAPE') for m, v in backtest_metrics.items()
+                       if v.get('MAPE') is not None and np.isfinite(v.get('MAPE'))}
+        if valid_models:
+            best_model = min(valid_models, key=valid_models.get)
+            best_mape = valid_models[best_model]
+
+            if best_mape > 15:
+                alerts.append({
+                    'tipo': 'error',
+                    'icona': '🔴',
+                    'titolo': 'Bassa Affidabilità Forecast',
+                    'descrizione': f'Miglior modello ({best_model}) ha MAPE={best_mape:.1f}% (>15%). '
+                                  f'Forecast poco affidabile, usare con cautela e margine sicurezza.',
+                    'severita': 'alta'
+                })
+            elif best_mape > 10:
+                alerts.append({
+                    'tipo': 'warning',
+                    'icona': '⚠️',
+                    'titolo': 'Affidabilità Moderata',
+                    'descrizione': f'MAPE={best_mape:.1f}%. Accuratezza accettabile ma monitorare i picchi.',
+                    'severita': 'media'
+                })
+
+    # 3. Alert: Dati storici incompleti
+    date_range = pd.date_range(df['DATA'].min(), df['DATA'].max(), freq='D')
+    giorni_attesi = len(date_range)
+    giorni_effettivi = df['DATA'].nunique()
+    missing_pct = ((giorni_attesi - giorni_effettivi) / giorni_attesi * 100)
+
+    if missing_pct > 5:
+        alerts.append({
+            'tipo': 'warning',
+            'icona': '📉',
+            'titolo': 'Dati Storici Incompleti',
+            'descrizione': f'Mancano {giorni_attesi - giorni_effettivi} giorni ({missing_pct:.1f}%) '
+                          f'nel periodo storico. Potrebbe impattare accuracy forecast.',
+            'severita': 'media' if missing_pct < 15 else 'alta'
+        })
+
+    # 4. Alert: Pattern anomali rilevati
+    daily = df.groupby('DATA')['OFFERTO'].sum()
+    if SKLEARN_AVAILABLE and not FAST_MODE and len(daily) > 30:
+        try:
+            from sklearn.ensemble import IsolationForest
+            X = daily.values.reshape(-1, 1)
+            iso = IsolationForest(contamination=0.05, random_state=42)
+            preds = iso.fit_predict(X)
+            n_anomalie = (preds == -1).sum()
+
+            if n_anomalie > len(daily) * 0.1:  # >10% anomalie
+                alerts.append({
+                    'tipo': 'info',
+                    'icona': '🔍',
+                    'titolo': 'Pattern Anomali Rilevati',
+                    'descrizione': f'{n_anomalie} giorni anomali rilevati ({n_anomalie/len(daily)*100:.1f}%). '
+                                  f'Verifica eventi speciali o cambi operativi.',
+                    'severita': 'bassa'
+                })
+        except Exception:
+            pass
+
+    # 5. Alert: Trend in cambiamento
+    if len(daily) >= 60:
+        # Trend su ultimi 30 vs precedenti 30
+        recent_trend = np.polyfit(range(30), daily.values[-30:], 1)[0]
+        older_trend = np.polyfit(range(30), daily.values[-60:-30], 1)[0]
+
+        if abs(recent_trend - older_trend) > media_storica * 0.02:  # Cambio >2%
+            direction = "crescita" if recent_trend > older_trend else "decrescita"
+            alerts.append({
+                'tipo': 'info',
+                'icona': '📊',
+                'titolo': f'Trend in {direction.capitalize()}',
+                'descrizione': f'Ultimi 30 giorni mostrano {direction} rispetto al periodo precedente. '
+                              f'Considera aggiornare forecast più frequentemente.',
+                'severita': 'bassa'
+            })
+
+    # 6. Alert: Stagionalità weekend molto diversa
+    if 'IS_WEEKEND' in df.columns:
+        media_wd = df[~df['IS_WEEKEND']]['OFFERTO'].mean()
+        media_we = df[df['IS_WEEKEND']]['OFFERTO'].mean()
+        diff_pct = abs((media_we - media_wd) / media_wd * 100)
+
+        if diff_pct > 30:
+            alerts.append({
+                'tipo': 'info',
+                'icona': '📅',
+                'titolo': 'Forte Stagionalità Weekend',
+                'descrizione': f'Weekend ha volume {diff_pct:.0f}% diverso da weekday. '
+                              f'Usa modelli con stagionalità settimanale (Prophet, TBATS).',
+                'severita': 'bassa'
+            })
+
+    # Ordina per severità
+    severita_order = {'alta': 0, 'media': 1, 'bassa': 2}
+    alerts.sort(key=lambda x: severita_order[x['severita']])
+
+    print(f"✅ Rilevati {len(alerts)} alert:")
+    for alert in alerts:
+        print(f"   {alert['icona']} [{alert['severita'].upper()}] {alert['titolo']}")
+
+    # Salva report alert
+    alert_path = Path(output_dir) / 'alert_automatici.txt'
+    with open(alert_path, 'w', encoding='utf-8') as f:
+        f.write("ALERT AUTOMATICI\n")
+        f.write("=" * 80 + "\n\n")
+        for alert in alerts:
+            f.write(f"{alert['icona']} [{alert['severita'].upper()}] {alert['titolo']}\n")
+            f.write(f"{alert['descrizione']}\n")
+            f.write("-" * 80 + "\n\n")
+
+    return alerts
 
 
 # =============================================================================
@@ -884,7 +1058,7 @@ def _forecast_holtwinters(df, output_dir, giorni_forecast=28, produce_outputs=Tr
             ax.legend()
             ax.grid(True, alpha=0.3)
             plt.tight_layout()
-            plt.savefig(f"{output_dir}/forecast_settimanale.png", dpi=300, bbox_inches='tight')
+            plt.savefig(f"{output_dir}/forecast_settimanale.png", dpi=150 if FAST_MODE else 300, bbox_inches='tight')
 
         if not forecast_daily_df.empty:
             fig, ax = plt.subplots(figsize=(16, 6))
@@ -905,7 +1079,7 @@ def _forecast_holtwinters(df, output_dir, giorni_forecast=28, produce_outputs=Tr
             ax.grid(True, alpha=0.3)
             plt.xticks(rotation=45)
             plt.tight_layout()
-            plt.savefig(f"{output_dir}/forecast_giornaliero.png", dpi=300, bbox_inches='tight')
+            plt.savefig(f"{output_dir}/forecast_giornaliero.png", dpi=150 if FAST_MODE else 300, bbox_inches='tight')
 
         if not forecast_fascia_df.empty:
             primo_giorno = forecast_fascia_df[forecast_fascia_df['DATA'] == forecast_fascia_df['DATA'].min()]
@@ -920,14 +1094,14 @@ def _forecast_holtwinters(df, output_dir, giorni_forecast=28, produce_outputs=Tr
             ax.set_ylabel('Chiamate Previste per Slot')
             ax.grid(True, alpha=0.3)
             plt.tight_layout()
-            plt.savefig(f"{output_dir}/forecast_intraday_esempio.png", dpi=300, bbox_inches='tight')
+            plt.savefig(f"{output_dir}/forecast_intraday_esempio.png", dpi=150 if FAST_MODE else 300, bbox_inches='tight')
         else:
             print("   Nota: nessun forecast per fascia disponibile, grafico intraday saltato.")
 
         print("   Grafici salvati")
 
         excel_path = Path(output_dir) / 'forecast_completo.xlsx'
-        with safe_excel_writer(excel_path, engine='openpyxl') as (writer, actual_path):
+        with safe_excel_writer(excel_path, engine='xlsxwriter') as (writer, actual_path):
             forecast_week_df.to_excel(writer, sheet_name='Forecast_Settimanale', index=False)
             forecast_daily_df.to_excel(writer, sheet_name='Forecast_Giornaliero', index=False)
             forecast_fascia_df.to_excel(writer, sheet_name='Forecast_per_Fascia', index=False)
@@ -1197,6 +1371,258 @@ def _esegui_backtest(df, metodi, giorni_forecast, fast_mode=False):
     return summary
 
 
+def carica_dati_consuntivo(file_path):
+    """
+    Carica file Excel consuntivo con stesso formato del forecast.
+    Assume colonne: DATA, OFFERTO
+    """
+    df = pd.read_excel(file_path)
+    df['DATA'] = pd.to_datetime(df['DATA'])
+    # Aggrega per giorno se ci sono fasce orarie
+    if 'FASCIA' in df.columns:
+        df = df.groupby('DATA')['OFFERTO'].sum().reset_index()
+    return df
+
+
+def confronta_forecast_consuntivo(forecast_df, consuntivo_path, output_dir):
+    """
+    Confronta forecast con dati consuntivi reali.
+
+    Args:
+        forecast_df: DataFrame con colonne DATA e FORECAST (o colonne modelli)
+        consuntivo_path: path al file Excel consuntivo
+        output_dir: cartella output
+
+    Returns:
+        dict con:
+            - confronto_df: DataFrame con forecast, consuntivo e errori
+            - metriche: dict per modello con MAE, MAPE, SMAPE
+            - periodo_overlap: date sovrapposte
+    """
+    print("\nCONFRONTO FORECAST vs CONSUNTIVO")
+    print("=" * 80)
+
+    # Carica consuntivo
+    consuntivo_df = carica_dati_consuntivo(consuntivo_path)
+    print(f"Consuntivo caricato: {len(consuntivo_df)} giorni")
+    print(f"Periodo: {consuntivo_df['DATA'].min().date()} - {consuntivo_df['DATA'].max().date()}")
+
+    # Identifica colonne modelli (escludi DATA)
+    model_cols = [col for col in forecast_df.columns if col != 'DATA']
+
+    # Merge su DATA
+    merged = pd.merge(
+        forecast_df,
+        consuntivo_df,
+        on='DATA',
+        how='inner',
+        suffixes=('_forecast', '_consuntivo')
+    )
+
+    if len(merged) == 0:
+        print("⚠️ Nessuna sovrapposizione tra date forecast e consuntivo!")
+        return None
+
+    print(f"Date sovrapposte: {len(merged)} giorni")
+
+    # Calcola metriche per ogni modello
+    metriche = {}
+    for model in model_cols:
+        if model not in merged.columns:
+            continue
+
+        actual = merged['OFFERTO'].values
+        predicted = merged[model].values
+
+        # Rimuovi NaN
+        mask = ~(np.isnan(actual) | np.isnan(predicted))
+        actual = actual[mask]
+        predicted = predicted[mask]
+
+        if len(actual) == 0:
+            continue
+
+        mae = np.mean(np.abs(actual - predicted))
+        mape = np.mean(np.abs((actual - predicted) / actual)) * 100
+        smape = np.mean(2 * np.abs(predicted - actual) / (np.abs(predicted) + np.abs(actual))) * 100
+
+        metriche[model] = {
+            'MAE': float(mae),
+            'MAPE': float(mape),
+            'SMAPE': float(smape),
+            'n_giorni': len(actual)
+        }
+
+        # Aggiungi colonne errore al DataFrame
+        merged[f'{model}_errore'] = merged[model] - merged['OFFERTO']
+        merged[f'{model}_errore_pct'] = ((merged[model] - merged['OFFERTO']) / merged['OFFERTO'] * 100)
+
+    # Stampa risultati
+    print("\nMetriche di accuratezza per modello:")
+    for model, metrics in sorted(metriche.items(), key=lambda x: x[1]['MAPE']):
+        print(f"  {model:20s}: MAE={metrics['MAE']:8.1f}  MAPE={metrics['MAPE']:6.2f}%  SMAPE={metrics['SMAPE']:6.2f}%")
+
+    # Salva Excel dettagliato
+    excel_path = Path(output_dir) / 'confronto_forecast_consuntivo.xlsx'
+    with safe_excel_writer(excel_path, engine='xlsxwriter') as (writer, actual_path):
+        # Sheet 1: Confronto giornaliero completo
+        merged.to_excel(writer, sheet_name='Confronto_Giornaliero', index=False)
+
+        # Sheet 2: Metriche riepilogo
+        metrics_df = pd.DataFrame(metriche).T
+        metrics_df.index.name = 'Modello'
+        metrics_df = metrics_df.sort_values('MAPE')
+        metrics_df.to_excel(writer, sheet_name='Metriche_Accuratezza')
+
+        # Sheet 3: Aggregazione settimanale
+        merged_copy = merged.copy()
+        merged_copy['DATA'] = pd.to_datetime(merged_copy['DATA'])
+        merged_copy = merged_copy.set_index('DATA')
+        weekly = merged_copy.resample('W-MON').sum(numeric_only=True).reset_index()
+        weekly.to_excel(writer, sheet_name='Confronto_Settimanale', index=False)
+
+        # Sheet 4: Aggregazione mensile
+        monthly = merged_copy.resample('MS').sum(numeric_only=True).reset_index()
+        monthly.to_excel(writer, sheet_name='Confronto_Mensile', index=False)
+
+    print(f"✅ File confronto salvato: {actual_path.name}")
+
+    # Genera grafico comparativo
+    _genera_grafico_confronto_consuntivo(merged, model_cols, output_dir)
+
+    return {
+        'confronto_df': merged,
+        'metriche': metriche,
+        'periodo_overlap': (merged['DATA'].min(), merged['DATA'].max()),
+        'output_path': actual_path
+    }
+
+
+def _genera_grafico_confronto_consuntivo(df, model_cols, output_dir):
+    """Genera grafici di confronto forecast vs consuntivo."""
+    fig, axes = plt.subplots(3, 1, figsize=(16, 12))
+
+    # Grafico 1: Linee forecast vs consuntivo
+    axes[0].plot(df['DATA'], df['OFFERTO'],
+                 label='CONSUNTIVO', linewidth=3, color='black', marker='o', markersize=4)
+
+    colors = ['#2E86AB', '#A23B72', '#F18F01', '#6A994E', '#BC4B51', '#8B5CF6', '#C73E1D']
+    for i, model in enumerate(model_cols[:7]):  # Max 7 modelli per leggibilità
+        if model in df.columns:
+            axes[0].plot(df['DATA'], df[model],
+                        label=model.upper(), linewidth=2, alpha=0.7,
+                        color=colors[i % len(colors)], linestyle='--')
+
+    axes[0].set_title('Confronto Forecast vs Consuntivo', fontsize=14, fontweight='bold')
+    axes[0].set_ylabel('Chiamate')
+    axes[0].legend(loc='best')
+    axes[0].grid(True, alpha=0.3)
+
+    # Grafico 2: Errori percentuali
+    for i, model in enumerate(model_cols[:7]):
+        col_err = f'{model}_errore_pct'
+        if col_err in df.columns:
+            axes[1].plot(df['DATA'], df[col_err],
+                        label=model.upper(), linewidth=2, alpha=0.7,
+                        color=colors[i % len(colors)])
+
+    axes[1].axhline(0, color='black', linestyle='-', linewidth=1)
+    axes[1].set_title('Errore Percentuale per Modello', fontsize=14, fontweight='bold')
+    axes[1].set_ylabel('Errore %')
+    axes[1].legend(loc='best')
+    axes[1].grid(True, alpha=0.3)
+
+    # Grafico 3: Distribuzione errori (boxplot)
+    error_data = []
+    labels = []
+    for model in model_cols[:7]:
+        col_err = f'{model}_errore_pct'
+        if col_err in df.columns:
+            error_data.append(df[col_err].dropna())
+            labels.append(model.upper())
+
+    if error_data:
+        axes[2].boxplot(error_data, labels=labels, vert=True, patch_artist=True)
+        axes[2].axhline(0, color='red', linestyle='--', linewidth=1)
+        axes[2].set_title('Distribuzione Errori per Modello', fontsize=14, fontweight='bold')
+        axes[2].set_ylabel('Errore %')
+        axes[2].grid(True, alpha=0.3, axis='y')
+        plt.setp(axes[2].xaxis.get_majorticklabels(), rotation=45, ha='right')
+
+    plt.tight_layout()
+    plt.savefig(f'{output_dir}/confronto_forecast_consuntivo.png', dpi=150 if FAST_MODE else 300, bbox_inches='tight')
+    print(f"   Grafico confronto salvato: confronto_forecast_consuntivo.png")
+    plt.close()
+
+
+def _process_single_fascia_intraday(args):
+    """Helper per processare una singola fascia oraria in parallelo."""
+    fascia, df_fascia_subset, future_dates, giorni_forecast = args
+    
+    try:
+        from statsmodels.tsa.holtwinters import ExponentialSmoothing
+        
+        forecast_results = []
+        
+        if len(df_fascia_subset) < 14:
+            # Dati insufficienti, usa media storica
+            media_per_dow = df_fascia_subset.groupby('DOW')['OFFERTO'].mean().to_dict()
+            for future_date in future_dates:
+                dow = future_date.dayofweek
+                forecast_val = media_per_dow.get(dow, df_fascia_subset['OFFERTO'].mean())
+                forecast_results.append({
+                    'DATA': future_date,
+                    'FASCIA': fascia,
+                    'MINUTI': df_fascia_subset['MINUTI'].iloc[0] if len(df_fascia_subset) > 0 else 0,
+                    'GG_SETT': ['lun','mar','mer','gio','ven','sab','dom'][dow],
+                    'FORECAST': max(0, forecast_val)
+                })
+            return forecast_results
+        
+        # Crea serie temporale per questa fascia
+        ts = df_fascia_subset.groupby('DATA')['OFFERTO'].mean().sort_index()
+        ts = ts.asfreq('D', fill_value=0)
+        
+        try:
+            # Modello Holt-Winters con stagionalita settimanale
+            model = ExponentialSmoothing(
+                ts.values,
+                seasonal_periods=7,
+                trend='add',
+                seasonal='add',
+                initialization_method='estimated'
+            )
+            fit = model.fit()
+            forecast_vals = fit.forecast(steps=giorni_forecast)
+        
+        except Exception:
+            # Fallback: usa media mobile con pattern settimanale
+            media_per_dow = df_fascia_subset.groupby('DOW')['OFFERTO'].mean().to_dict()
+            base = ts.tail(7).mean()
+            forecast_vals = []
+            for i, future_date in enumerate(future_dates):
+                dow = future_date.dayofweek
+                dow_factor = media_per_dow.get(dow, base) / base if base > 0 else 1.0
+                forecast_vals.append(base * dow_factor)
+        
+        # Salva risultati
+        for i, future_date in enumerate(future_dates):
+            dow = future_date.dayofweek
+            forecast_results.append({
+                'DATA': future_date,
+                'FASCIA': fascia,
+                'MINUTI': df_fascia_subset['MINUTI'].iloc[0] if len(df_fascia_subset) > 0 else 0,
+                'GG_SETT': ['lun','mar','mer','gio','ven','sab','dom'][dow],
+                'FORECAST': max(0, forecast_vals[i] if i < len(forecast_vals) else 0)
+            })
+        
+        return forecast_results
+    
+    except Exception as exc:
+        # In caso di errore, ritorna lista vuota
+        return []
+
+
 def _forecast_intraday_dinamico(df, giorni_forecast=28, produce_outputs=False):
     """
     Forecast intraday dinamico con modelli separati per fascia oraria.
@@ -1234,60 +1660,29 @@ def _forecast_intraday_dinamico(df, giorni_forecast=28, produce_outputs=False):
         if produce_outputs:
             print(f"   Modellando {len(fasce_uniche)} fasce orarie...")
 
+        # Prepara argomenti per processing parallelo
+        from concurrent.futures import ThreadPoolExecutor
+        
+        fascia_args = []
         for fascia in fasce_uniche:
             df_questa_fascia = df_fascia[df_fascia['FASCIA'] == fascia].copy()
-
-            if len(df_questa_fascia) < 14:
-                # Dati insufficienti, usa media storica
-                media_per_dow = df_questa_fascia.groupby('DOW')['OFFERTO'].mean().to_dict()
-                for future_date in future_dates:
-                    dow = future_date.dayofweek
-                    forecast_val = media_per_dow.get(dow, df_questa_fascia['OFFERTO'].mean())
-                    forecast_results.append({
-                        'DATA': future_date,
-                        'FASCIA': fascia,
-                        'MINUTI': df_questa_fascia['MINUTI'].iloc[0] if len(df_questa_fascia) > 0 else 0,
-                        'GG_SETT': ['lun','mar','mer','gio','ven','sab','dom'][dow],
-                        'FORECAST': max(0, forecast_val)
-                    })
-                continue
-
-            # Crea serie temporale per questa fascia
-            ts = df_questa_fascia.groupby('DATA')['OFFERTO'].mean().sort_index()
-            ts = ts.asfreq('D', fill_value=0)
-
-            try:
-                # Modello Holt-Winters con stagionalità settimanale
-                model = ExponentialSmoothing(
-                    ts.values,
-                    seasonal_periods=7,
-                    trend='add',
-                    seasonal='add',
-                    initialization_method='estimated'
-                )
-                fit = model.fit()
-                forecast_vals = fit.forecast(steps=giorni_forecast)
-
-            except Exception:
-                # Fallback: usa media mobile con pattern settimanale
-                media_per_dow = df_questa_fascia.groupby('DOW')['OFFERTO'].mean().to_dict()
-                base = ts.tail(7).mean()
-                forecast_vals = []
-                for i, future_date in enumerate(future_dates):
-                    dow = future_date.dayofweek
-                    dow_factor = media_per_dow.get(dow, base) / base if base > 0 else 1.0
-                    forecast_vals.append(base * dow_factor)
-
-            # Salva risultati
-            for i, future_date in enumerate(future_dates):
-                dow = future_date.dayofweek
-                forecast_results.append({
-                    'DATA': future_date,
-                    'FASCIA': fascia,
-                    'MINUTI': df_questa_fascia['MINUTI'].iloc[0] if len(df_questa_fascia) > 0 else 0,
-                    'GG_SETT': ['lun','mar','mer','gio','ven','sab','dom'][dow],
-                    'FORECAST': max(0, forecast_vals[i] if i < len(forecast_vals) else 0)
-                })
+            fascia_args.append((fascia, df_questa_fascia, future_dates, giorni_forecast))
+        
+        # Processing parallelo delle fasce (solo se ci sono abbastanza fasce)
+        forecast_results = []
+        if len(fasce_uniche) >= 4 and not FAST_MODE:
+            # Usa multiprocessing per >= 4 fasce in modalita normale
+            if produce_outputs:
+                print(f"   Processamento parallelo di {len(fasce_uniche)} fasce orarie...")
+            with ThreadPoolExecutor(max_workers=min(4, len(fasce_uniche))) as executor:
+                results = executor.map(_process_single_fascia_intraday, fascia_args)
+                for result in results:
+                    forecast_results.extend(result)
+        else:
+            # Processing sequenziale per poche fasce o fast mode
+            for args in fascia_args:
+                result = _process_single_fascia_intraday(args)
+                forecast_results.extend(result)
 
         forecast_df = pd.DataFrame(forecast_results)
 
@@ -1640,11 +2035,14 @@ def _forecast_tbats(df, giorni_forecast=28, produce_outputs=False):
     try:
         # TBATS rileva automaticamente le stagionalità
         # seasonal_periods: [7 (weekly), 30.5 (monthly)]
+        # PERFORMANCE: In fast_mode usa solo stagionalità settimanale per velocità
+        seasonal_periods = [7] if FAST_MODE else [7, 30.5]
+
         estimator = TBATS(
-            seasonal_periods=[7, 30.5],
+            seasonal_periods=seasonal_periods,
             use_trend=True,
             use_box_cox=False,  # Box-Cox può essere instabile con dati call center
-            n_jobs=1
+            n_jobs=-1  # PERFORMANCE: Usa tutti i core CPU disponibili (2-4x speedup)
         )
 
         if produce_outputs:
@@ -1687,7 +2085,7 @@ def _forecast_tbats(df, giorni_forecast=28, produce_outputs=False):
 def _salva_forecast_excel(output_dir, nome_file, forecast_data):
     """Salva forecast giornaliero e per fascia in un unico Excel."""
     output_path = Path(output_dir) / nome_file
-    with safe_excel_writer(output_path, engine='openpyxl') as (writer, actual_path):
+    with safe_excel_writer(output_path, engine='xlsxwriter') as (writer, actual_path):
         forecast_data['giornaliero'].to_excel(writer, sheet_name='Forecast_Giornaliero', index=False)
         if 'per_fascia' in forecast_data:
             forecast_data['per_fascia'].to_excel(writer, sheet_name='Forecast_per_Fascia', index=False)
@@ -1812,7 +2210,7 @@ def _salva_forecast_completo(output_dir, confronto_df, backtest_metrics, best_mo
         if backtest_metrics and best_model in backtest_metrics:
             best_metrics = backtest_metrics[best_model]
 
-    with safe_excel_writer(output_path, engine='openpyxl') as (writer, actual_path):
+    with safe_excel_writer(output_path, engine='xlsxwriter') as (writer, actual_path):
         confronto_export.to_excel(writer, sheet_name='Forecast_Tutti_Modelli', index=False)
 
         # Aggregazioni per confronto rapido
@@ -2142,7 +2540,7 @@ def _genera_grafico_confronto_modelli(confronto_df, output_dir):
     axes[1].tick_params(axis='x', rotation=45)
 
     plt.tight_layout()
-    plt.savefig(f'{output_dir}/confronto_modelli_forecast.png', dpi=300, bbox_inches='tight')
+    plt.savefig(f'{output_dir}/confronto_modelli_forecast.png', dpi=150 if FAST_MODE else 300, bbox_inches='tight')
     print(f"   Grafico confronto modelli salvato: confronto_modelli_forecast.png")
     plt.close()
 
@@ -2261,7 +2659,7 @@ def valuta_modelli_forecast(df, output_dir, giorni_forecast=28, min_train_giorni
     summary_df = summary.to_frame(name='Media').reset_index().rename(columns={'index': 'Metrica'})
 
     output_path = Path(output_dir) / 'valutazione_forecast.xlsx'
-    with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+    with pd.ExcelWriter(output_path, engine='xlsxwriter') as writer:
         risultati_df.to_excel(writer, sheet_name='Dettaglio', index=False)
         summary_df.to_excel(writer, sheet_name='Sintesi', index=False)
 
@@ -2407,7 +2805,7 @@ def crea_dashboard_excel(df, fascia_stats, giorno_stats, week_stats, mese_stats,
     
     file_path = Path(output_dir) / 'dashboard_completa.xlsx'
     
-    with safe_excel_writer(file_path, engine='openpyxl') as (writer, actual_path):
+    with safe_excel_writer(file_path, engine='xlsxwriter') as (writer, actual_path):
         # KPI
         kpi_df = pd.DataFrame([
             ['Totale Chiamate', f"{kpi['totale_chiamate']:,.0f}"],
@@ -2453,6 +2851,219 @@ def genera_report_finale(df, kpi, forecast_giornaliero_df, output_dir):
             f.write(f"  {row['DATA'].strftime('%Y-%m-%d')} ({row['GG_SETT']}): {row['FORECAST']:,.0f} chiamate\n")
     
     print("Report finale salvato")
+
+
+def _genera_report_pdf(df, forecast_modelli, backtest_metrics, kpi, output_dir):
+    """
+    Genera report esecutivo PDF di 1 pagina con tutte le info chiave.
+    Usa matplotlib backend PDF (nessuna dipendenza esterna).
+
+    Args:
+        df: DataFrame dati storici
+        forecast_modelli: dict risultati forecast (da genera_forecast_modelli)
+        backtest_metrics: dict metriche affidabilità
+        kpi: dict KPI consuntivi
+        output_dir: cartella output
+    """
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    print("\nGENERAZIONE REPORT PDF ESECUTIVO")
+    print("=" * 80)
+
+    pdf_path = Path(output_dir) / 'report_esecutivo_forecast.pdf'
+
+    # Estrai miglior modello
+    best_model = None
+    best_mape = None
+    if backtest_metrics:
+        valid_models = {m: v.get('MAPE') for m, v in backtest_metrics.items()
+                       if v.get('MAPE') is not None and np.isfinite(v.get('MAPE'))}
+        if valid_models:
+            best_model = min(valid_models, key=valid_models.get)
+            best_mape = valid_models[best_model]
+
+    # Estrai forecast del miglior modello
+    confronto_df = forecast_modelli.get('confronto_df')
+    forecast_best = None
+    if confronto_df is not None and best_model and best_model in confronto_df.columns:
+        forecast_best = confronto_df[['DATA', best_model]].copy()
+        forecast_best.rename(columns={best_model: 'FORECAST'}, inplace=True)
+    elif confronto_df is not None:
+        # Fallback: usa prima colonna disponibile
+        first_col = [c for c in confronto_df.columns if c != 'DATA'][0]
+        forecast_best = confronto_df[['DATA', first_col]].copy()
+        forecast_best.rename(columns={first_col: 'FORECAST'}, inplace=True)
+        best_model = first_col
+
+    if forecast_best is None:
+        print("⚠️ Nessun forecast disponibile per PDF")
+        return None
+
+    # Calcola metriche derivate
+    totale_forecast = forecast_best['FORECAST'].sum()
+    media_daily_forecast = forecast_best['FORECAST'].mean()
+
+    # Confronto con storico
+    daily_historical = df.groupby('DATA')['OFFERTO'].sum()
+    media_storica = daily_historical.mean()
+    variazione_pct = ((media_daily_forecast - media_storica) / media_storica * 100) if media_storica > 0 else 0
+
+    # Identifica picchi (top 5 giorni)
+    top_days = forecast_best.nlargest(5, 'FORECAST')
+
+    # Trend (crescita/stabile/decrescita)
+    trend_coeff = np.polyfit(range(len(forecast_best)), forecast_best['FORECAST'].values, 1)[0]
+    if trend_coeff > media_daily_forecast * 0.01:  # >1% crescita
+        trend = "CRESCITA"
+        trend_icon = "↗"
+    elif trend_coeff < -media_daily_forecast * 0.01:
+        trend = "DECRESCITA"
+        trend_icon = "↘"
+    else:
+        trend = "STABILE"
+        trend_icon = "→"
+
+    # Crea PDF multi-pagina
+    with PdfPages(pdf_path) as pdf:
+        # PAGINA 1: Executive Summary
+        fig = plt.figure(figsize=(8.27, 11.69))  # A4
+        fig.suptitle('REPORT ESECUTIVO FORECAST', fontsize=20, fontweight='bold', y=0.96)
+
+        # Sezione 1: KPI Principali (griglia 3x2)
+        ax1 = plt.subplot2grid((6, 2), (0, 0), colspan=2, rowspan=1)
+        ax1.axis('off')
+
+        summary_text = f"""
+PERIODO FORECAST: {forecast_best['DATA'].min().strftime('%d/%m/%Y')} - {forecast_best['DATA'].max().strftime('%d/%m/%Y')} ({len(forecast_best)} giorni)
+MODELLO UTILIZZATO: {best_model.upper() if best_model else 'N/D'}
+AFFIDABILITÀ (MAPE): {best_mape:.1f}% {'✅ ECCELLENTE' if best_mape and best_mape < 5 else '⚠️ BUONA' if best_mape and best_mape < 10 else '🔴 BASSA' if best_mape else 'N/D'}
+        """
+        ax1.text(0.05, 0.5, summary_text.strip(), fontsize=11, verticalalignment='center',
+                fontfamily='monospace', bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.3))
+
+        # KPI Box grande
+        ax2 = plt.subplot2grid((6, 2), (1, 0), colspan=1, rowspan=1)
+        ax2.axis('off')
+        kpi_box = f"""
+╔══════════════════════════════════╗
+║  TOTALE CHIAMATE PREVISTE        ║
+║  {totale_forecast:,.0f}                       ║
+╚══════════════════════════════════╝
+        """
+        ax2.text(0.5, 0.5, kpi_box.strip(), fontsize=14, fontweight='bold',
+                ha='center', va='center', fontfamily='monospace',
+                bbox=dict(boxstyle='round', facecolor='#C6F6D5', alpha=0.8))
+
+        ax3 = plt.subplot2grid((6, 2), (1, 1), colspan=1, rowspan=1)
+        ax3.axis('off')
+        variazione_color = '#C6F6D5' if variazione_pct > 0 else '#FED7D7'
+        var_text = f"""
+╔══════════════════════════════════╗
+║  VARIAZIONE vs STORICO {trend_icon}       ║
+║  {variazione_pct:+.1f}%                       ║
+╚══════════════════════════════════╝
+        """
+        ax3.text(0.5, 0.5, var_text.strip(), fontsize=14, fontweight='bold',
+                ha='center', va='center', fontfamily='monospace',
+                bbox=dict(boxstyle='round', facecolor=variazione_color, alpha=0.8))
+
+        # Sezione 2: Grafico Forecast
+        ax4 = plt.subplot2grid((6, 2), (2, 0), colspan=2, rowspan=2)
+        ax4.plot(forecast_best['DATA'], forecast_best['FORECAST'],
+                linewidth=2.5, color='#2E86AB', marker='o', markersize=3)
+        ax4.fill_between(forecast_best['DATA'], 0, forecast_best['FORECAST'], alpha=0.2, color='#2E86AB')
+        ax4.set_title('Forecast Giornaliero', fontsize=12, fontweight='bold')
+        ax4.set_ylabel('Chiamate Previste')
+        ax4.grid(True, alpha=0.3)
+        ax4.tick_params(axis='x', rotation=45)
+
+        # Sezione 3: Top 5 Picchi
+        ax5 = plt.subplot2grid((6, 2), (4, 0), colspan=1, rowspan=2)
+        ax5.axis('off')
+        picchi_text = "TOP 5 GIORNI DI PICCO:\n" + "-" * 35 + "\n"
+        for idx, row in top_days.iterrows():
+            picchi_text += f"{row['DATA'].strftime('%d/%m/%Y')}: {row['FORECAST']:>8,.0f}\n"
+        ax5.text(0.05, 0.95, picchi_text, fontsize=10, verticalalignment='top',
+                fontfamily='monospace', bbox=dict(boxstyle='round', facecolor='#FEFCBF', alpha=0.5))
+
+        # Sezione 4: Metriche modelli
+        ax6 = plt.subplot2grid((6, 2), (4, 1), colspan=1, rowspan=2)
+        ax6.axis('off')
+
+        if backtest_metrics:
+            metrics_text = "AFFIDABILITÀ MODELLI:\n" + "-" * 35 + "\n"
+            sorted_models = sorted(backtest_metrics.items(), key=lambda x: x[1].get('MAPE', 999))[:5]
+            for model, vals in sorted_models:
+                mape = vals.get('MAPE', 0)
+                metrics_text += f"{model[:12]:12s}: {mape:5.1f}% MAPE\n"
+        else:
+            metrics_text = "Metriche non disponibili"
+
+        ax6.text(0.05, 0.95, metrics_text, fontsize=10, verticalalignment='top',
+                fontfamily='monospace', bbox=dict(boxstyle='round', facecolor='#E9D8FD', alpha=0.5))
+
+        # Footer
+        fig.text(0.5, 0.02, f'Generato il {datetime.now().strftime("%d/%m/%Y %H:%M")} | Script v{SCRIPT_VERSION}',
+                ha='center', fontsize=8, style='italic', color='gray')
+
+        plt.tight_layout(rect=[0, 0.03, 1, 0.94])
+        pdf.savefig(fig, dpi=150)
+        plt.close()
+
+        # PAGINA 2: Confronto Modelli (se disponibili)
+        if confronto_df is not None and len([c for c in confronto_df.columns if c != 'DATA']) > 1:
+            fig2, ax = plt.subplots(figsize=(8.27, 11.69))
+
+            model_cols = [c for c in confronto_df.columns if c != 'DATA']
+            colors = ['#2E86AB', '#A23B72', '#F18F01', '#6A994E', '#BC4B51', '#8B5CF6', '#C73E1D']
+
+            for i, model in enumerate(model_cols[:7]):
+                ax.plot(confronto_df['DATA'], confronto_df[model],
+                       label=model.upper(), linewidth=2, alpha=0.8,
+                       color=colors[i % len(colors)])
+
+            ax.set_title('Confronto Forecast tra Modelli', fontsize=14, fontweight='bold')
+            ax.set_xlabel('Data')
+            ax.set_ylabel('Chiamate Previste')
+            ax.legend(loc='best')
+            ax.grid(True, alpha=0.3)
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            pdf.savefig(fig2, dpi=150)
+            plt.close()
+
+        # PAGINA 3: Breakdown settimanale
+        fig3, (ax1, ax2) = plt.subplots(2, 1, figsize=(8.27, 11.69))
+
+        # Aggregazione settimanale
+        forecast_weekly = forecast_best.copy()
+        forecast_weekly['DATA'] = pd.to_datetime(forecast_weekly['DATA'])
+        forecast_weekly = forecast_weekly.set_index('DATA')
+        weekly = forecast_weekly.resample('W-MON').sum().reset_index()
+        weekly['SETTIMANA'] = weekly['DATA'].dt.strftime('Sett. %d/%m')
+
+        ax1.bar(range(len(weekly)), weekly['FORECAST'], color='#2E86AB', alpha=0.7)
+        ax1.set_title('Breakdown Settimanale', fontsize=12, fontweight='bold')
+        ax1.set_ylabel('Chiamate Totali')
+        ax1.set_xticks(range(len(weekly)))
+        ax1.set_xticklabels(weekly['SETTIMANA'], rotation=45, ha='right')
+        ax1.grid(True, alpha=0.3, axis='y')
+
+        # Distribuzione giorni settimana (da storico)
+        if 'GG SETT' in df.columns:
+            gg_dist = df.groupby('GG SETT')['OFFERTO'].mean().reindex(['lun', 'mar', 'mer', 'gio', 'ven', 'sab', 'dom'])
+            ax2.bar(gg_dist.index, gg_dist.values, color='#A23B72', alpha=0.7)
+            ax2.set_title('Pattern Settimanale (Media Storica)', fontsize=12, fontweight='bold')
+            ax2.set_ylabel('Chiamate Medie')
+            ax2.grid(True, alpha=0.3, axis='y')
+
+        plt.tight_layout()
+        pdf.savefig(fig3, dpi=150)
+        plt.close()
+
+    print(f"✅ Report PDF salvato: {pdf_path.name}")
+    return pdf_path
+
 
 # =============================================================================
 # PROCESSING SINGOLO FILE
@@ -2567,10 +3178,26 @@ def processa_singolo_file(file_path, output_dir, giorni_forecast=28, escludi_fes
         excel_path = crea_dashboard_excel(df, fascia_stats, giorno_stats, week_stats, mese_stats, curve, forecast_completo['giornaliero'], kpi, output_dir)
         _log_step_time("Dashboard Excel", t_step)
 
-        print("\n[16/16] Report finale...")
+        print("\n[16/19] Report finale...")
         t_step = time.time()
         genera_report_finale(df, kpi, forecast_completo['giornaliero'], output_dir)
         _log_step_time("Report finale", t_step)
+
+        # [17/19] Alert automatici
+        print("\n[17/19] Alert automatici...")
+        t_step = time.time()
+        forecast_giornaliero = forecast_completo.get('giornaliero') if forecast_completo else None
+        alerts = _rileva_alert(df, forecast_giornaliero, forecast_modelli.get('backtest'), output_dir) if forecast_giornaliero is not None else []
+        _log_step_time("Alert automatici", t_step)
+
+        # [18/19] Report PDF esecutivo
+        print("\n[18/19] Report PDF esecutivo...")
+        t_step = time.time()
+        pdf_path = _genera_report_pdf(df, forecast_modelli, forecast_modelli.get('backtest'), kpi, output_dir)
+        _log_step_time("Report PDF esecutivo", t_step)
+
+        # [19/19] Pipeline completata
+        print("\n[19/19] Pipeline completata (confronto consuntivo disponibile su richiesta GUI)")
 
         print("\n" + "=" * 80)
         print("✅ FILE COMPLETATO!")
@@ -2586,6 +3213,8 @@ def processa_singolo_file(file_path, output_dir, giorni_forecast=28, escludi_fes
             'forecast': forecast_completo,
             'valutazione': valutazione,
             'forecast_modelli': forecast_modelli,
+            'alerts': alerts,          # NUOVO
+            'pdf_path': pdf_path,      # NUOVO
             'success': True
         }
 
@@ -2756,7 +3385,7 @@ def genera_report_riassuntivo(risultati, script_dir):
         output_path = os.path.join(script_dir, 'output', '_report_riassuntivo.xlsx')
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-        with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+        with pd.ExcelWriter(output_path, engine='xlsxwriter') as writer:
             df_report.to_excel(writer, sheet_name='Riepilogo', index=False)
 
             # Aggiungi foglio con dettagli timestamp
@@ -2875,6 +3504,22 @@ class ForecastGUI:
         self.output_files = []
         self.period_var = tk.StringVar(value='giorno')
 
+        # Nuove variabili per funzionalità avanzate
+        self.consuntivo_path_var = tk.StringVar(value="")
+        self.confronto_consuntivo_df = None
+        self.alerts_list = []
+        self.kpi_forecast = None
+        self.kpi_widgets = {}
+        self.alert_tree = None
+        self.consuntivo_tree = None
+        self.consuntivo_status = None
+        self.plot_type_var = tk.StringVar(value="forecast_comparison")
+        self.interactive_fig = None
+        self.interactive_ax = None
+        self.interactive_canvas = None
+        self.interactive_toolbar = None
+        self.dashboard_preview_label = None
+
         self._build_layout()
         # Avvia subito il polling della coda log per evitare corse tra thread
         # e consentire di mostrare qualsiasi messaggio già emesso sul prompt.
@@ -2936,17 +3581,130 @@ class ForecastGUI:
         notebook = ttk.Notebook(self.root)
         notebook.pack(fill="both", expand=True, padx=10, pady=5)
 
+        # Nuovo ordine tab con nuove funzionalità
+        tab_dashboard = ttk.Frame(notebook)
+        tab_alert = ttk.Frame(notebook)
+        tab_plots_interactive = ttk.Frame(notebook)
         tab_plots = ttk.Frame(notebook)
         tab_compare = ttk.Frame(notebook)
+        tab_consuntivo = ttk.Frame(notebook)
         tab_output = ttk.Frame(notebook)
         tab_log = ttk.Frame(notebook)
         tab_guide = ttk.Frame(notebook)
-        notebook.add(tab_plots, text="Grafici")
-        notebook.add(tab_compare, text="Confronti & Affidabilità")
-        notebook.add(tab_output, text="File & Metriche")
-        notebook.add(tab_log, text="Log live")
-        notebook.add(tab_guide, text="Guida modelli")
 
+        notebook.add(tab_dashboard, text="📊 Dashboard KPI")
+        notebook.add(tab_alert, text="⚠️ Alert")
+        notebook.add(tab_plots_interactive, text="📈 Grafici Interattivi")
+        notebook.add(tab_plots, text="🖼️ Grafici PNG")
+        notebook.add(tab_compare, text="⚖️ Confronti & Affidabilità")
+        notebook.add(tab_consuntivo, text="✅ Forecast vs Consuntivo")
+        notebook.add(tab_output, text="📁 File & Metriche")
+        notebook.add(tab_log, text="📝 Log live")
+        notebook.add(tab_guide, text="📚 Guida modelli")
+
+        # ========== TAB DASHBOARD KPI ==========
+        ttk.Label(tab_dashboard, text="Dashboard KPI Forecast", font=("Helvetica", 16, "bold")).pack(pady=10)
+
+        kpi_frame = ttk.Frame(tab_dashboard, padding=10)
+        kpi_frame.pack(fill="both", expand=True)
+
+        # Griglia 2x3 per KPI cards
+        self.kpi_widgets['totale'] = self._create_kpi_card(kpi_frame, "Totale Forecast", "0", "#2E86AB", 0, 0)
+        self.kpi_widgets['variazione'] = self._create_kpi_card(kpi_frame, "Variazione vs Storico", "N/D", "#A23B72", 0, 1)
+        self.kpi_widgets['picchi'] = self._create_kpi_card(kpi_frame, "Giorni di Picco", "0", "#F18F01", 0, 2)
+        self.kpi_widgets['affidabilita'] = self._create_kpi_card(kpi_frame, "Affidabilità (MAPE)", "N/D", "#6A994E", 1, 0)
+        self.kpi_widgets['trend'] = self._create_kpi_card(kpi_frame, "Trend", "N/D", "#8B5CF6", 1, 1)
+        self.kpi_widgets['modello'] = self._create_kpi_card(kpi_frame, "Miglior Modello", "N/D", "#C73E1D", 1, 2)
+
+        # ========== TAB ALERT ==========
+        ttk.Label(tab_alert, text="Alert e Avvisi Automatici", font=("Helvetica", 14, "bold")).pack(pady=10)
+
+        alert_info = ttk.Label(tab_alert, text="Sistema di monitoraggio automatico per identificare condizioni di attenzione",
+                              font=("Helvetica", 9, "italic"))
+        alert_info.pack()
+
+        self.alert_tree = ttk.Treeview(tab_alert, columns=("icona", "severita", "titolo", "descrizione"),
+                                       show='headings', height=15)
+        self.alert_tree.heading("icona", text="")
+        self.alert_tree.heading("severita", text="Severità")
+        self.alert_tree.heading("titolo", text="Alert")
+        self.alert_tree.heading("descrizione", text="Descrizione")
+
+        self.alert_tree.column("icona", width=40, anchor='center')
+        self.alert_tree.column("severita", width=100, anchor='center')
+        self.alert_tree.column("titolo", width=200)
+        self.alert_tree.column("descrizione", width=500)
+
+        self.alert_tree.tag_configure('alta', background='#FED7D7')
+        self.alert_tree.tag_configure('media', background='#FEFCBF')
+        self.alert_tree.tag_configure('bassa', background='#E6FFFA')
+
+        self.alert_tree.pack(fill="both", expand=True, padx=10, pady=10)
+
+        legend_frame = ttk.Frame(tab_alert)
+        legend_frame.pack(fill="x", padx=10, pady=(0, 10))
+        ttk.Label(legend_frame, text="🔴 Alta  |  ⚠️ Media  |  ℹ️ Bassa", font=("Helvetica", 9)).pack()
+
+        # ========== TAB GRAFICI INTERATTIVI ==========
+        ttk.Label(tab_plots_interactive, text="Grafici Interattivi con Zoom/Pan",
+                 font=("Helvetica", 14, "bold")).pack(pady=10)
+
+        toolbar_frame = ttk.Frame(tab_plots_interactive)
+        toolbar_frame.pack(fill="x", padx=10, pady=5)
+
+        ttk.Label(toolbar_frame, text="Seleziona grafico:").pack(side="left", padx=5)
+        plot_types = [
+            ("Confronto Modelli", "forecast_comparison"),
+            ("Serie Storica", "historical"),
+            ("Trend", "trend")
+        ]
+        for text, val in plot_types:
+            ttk.Radiobutton(toolbar_frame, text=text, variable=self.plot_type_var,
+                           value=val, command=self.update_interactive_plot).pack(side="left", padx=5)
+
+        self.interactive_fig = Figure(figsize=(12, 6), dpi=100)
+        self.interactive_ax = self.interactive_fig.add_subplot(111)
+        self.interactive_canvas = FigureCanvasTkAgg(self.interactive_fig, master=tab_plots_interactive)
+        self.interactive_canvas.get_tk_widget().pack(fill="both", expand=True, padx=10, pady=5)
+
+        self.interactive_toolbar = NavigationToolbar2Tk(self.interactive_canvas, tab_plots_interactive)
+        self.interactive_toolbar.update()
+
+        self.interactive_ax.text(0.5, 0.5, 'Esegui forecast per visualizzare grafici interattivi',
+                                ha='center', va='center', fontsize=12, color='gray')
+        self.interactive_canvas.draw()
+
+        # ========== TAB CONFRONTO CONSUNTIVO ==========
+        ttk.Label(tab_consuntivo, text="Confronto Forecast vs Consuntivo Effettivo",
+                 font=("Helvetica", 14, "bold")).pack(pady=10)
+
+        consuntivo_frame = ttk.Frame(tab_consuntivo, padding=10)
+        consuntivo_frame.pack(fill="x")
+
+        ttk.Label(consuntivo_frame, text="File Excel Consuntivo:").pack(side="left")
+        ttk.Entry(consuntivo_frame, textvariable=self.consuntivo_path_var, width=60).pack(side="left", padx=5)
+        ttk.Button(consuntivo_frame, text="Sfoglia", command=self.browse_consuntivo).pack(side="left", padx=2)
+        ttk.Button(consuntivo_frame, text="Esegui Confronto", command=self.run_confronto_consuntivo).pack(side="left", padx=5)
+
+        self.consuntivo_tree = ttk.Treeview(tab_consuntivo,
+                                            columns=("modello", "mae", "mape", "smape", "n_giorni"),
+                                            show='headings', height=10)
+        self.consuntivo_tree.heading("modello", text="Modello")
+        self.consuntivo_tree.heading("mae", text="MAE")
+        self.consuntivo_tree.heading("mape", text="MAPE (%)")
+        self.consuntivo_tree.heading("smape", text="SMAPE (%)")
+        self.consuntivo_tree.heading("n_giorni", text="Giorni Confrontati")
+
+        for col in self.consuntivo_tree['columns']:
+            self.consuntivo_tree.column(col, width=120, anchor='center')
+
+        self.consuntivo_tree.pack(fill="both", expand=True, padx=10, pady=10)
+
+        self.consuntivo_status = ttk.Label(tab_consuntivo, text="Seleziona file consuntivo per avviare confronto",
+                                          font=("Helvetica", 9, "italic"))
+        self.consuntivo_status.pack(pady=5)
+
+        # ========== TAB GRAFICI PNG (esistente, nessuna modifica) ==========
         combo_frame = ttk.Frame(tab_plots, padding=10)
         combo_frame.pack(fill="x")
         ttk.Label(combo_frame, text="Seleziona grafico PNG dall'ultimo output:").pack(side="left")
@@ -3297,6 +4055,17 @@ class ForecastGUI:
         self.txt_recommendation.configure(state="disabled")
         # ---------------------------------------------
 
+        # Aggiorna Dashboard KPI
+        self._refresh_dashboard_kpi(risultati)
+
+        # Aggiorna Alert
+        self._refresh_alerts(risultati)
+
+        # Aggiorna grafici interattivi
+        if self.confronto_df is not None:
+            self.update_interactive_plot()
+
+        # Refresh esistenti
         self.refresh_plots()
         self.refresh_comparisons()
         self.refresh_output_files()
@@ -3551,6 +4320,210 @@ class ForecastGUI:
         self.image_label.configure(image=img)
         caption = f"{os.path.basename(path)}  ({displayed_w}x{displayed_h} px visualizzati)"
         self.image_caption.configure(text=caption)
+
+    def _create_kpi_card(self, parent, title, initial_value, color, row, col):
+        """Crea una card KPI stilizzata."""
+        card = ttk.Frame(parent, relief="solid", borderwidth=1)
+        card.grid(row=row, column=col, padx=10, pady=10, sticky="nsew")
+
+        parent.columnconfigure(col, weight=1)
+        parent.rowconfigure(row, weight=1)
+
+        ttk.Label(card, text=title, font=("Helvetica", 10)).pack(pady=(10, 5))
+        value_label = ttk.Label(card, text=initial_value, font=("Helvetica", 20, "bold"), foreground=color)
+        value_label.pack(pady=(5, 10))
+
+        return value_label
+
+    def update_interactive_plot(self):
+        """Aggiorna il grafico interattivo in base alla selezione."""
+        if not self.confronto_df or self.confronto_df.empty:
+            return
+
+        self.interactive_ax.clear()
+        plot_type = self.plot_type_var.get()
+
+        if plot_type == "forecast_comparison":
+            model_cols = [c for c in self.confronto_df.columns if c != 'DATA']
+            colors = ['#2E86AB', '#A23B72', '#F18F01', '#6A994E', '#BC4B51', '#8B5CF6', '#C73E1D']
+
+            for i, model in enumerate(model_cols[:7]):
+                self.interactive_ax.plot(self.confronto_df['DATA'], self.confronto_df[model],
+                                        label=model.upper(), linewidth=2,
+                                        color=colors[i % len(colors)], alpha=0.8)
+
+            self.interactive_ax.set_title('Confronto Forecast tra Modelli', fontsize=12, fontweight='bold')
+            self.interactive_ax.set_ylabel('Chiamate Previste')
+            self.interactive_ax.legend(loc='best')
+
+        elif plot_type == "historical":
+            self.interactive_ax.text(0.5, 0.5, 'Serie storica non ancora implementata',
+                                   ha='center', va='center')
+
+        elif plot_type == "trend":
+            self.interactive_ax.text(0.5, 0.5, 'Analisi trend non ancora implementata',
+                                   ha='center', va='center')
+
+        self.interactive_ax.grid(True, alpha=0.3)
+        self.interactive_fig.autofmt_xdate()
+        self.interactive_canvas.draw()
+
+    def browse_consuntivo(self):
+        """Apri dialog per selezionare file consuntivo."""
+        path = filedialog.askopenfilename(
+            title="Seleziona file Excel consuntivo",
+            filetypes=[("Excel files", "*.xlsx *.xls"), ("All files", "*.*")]
+        )
+        if path:
+            self.consuntivo_path_var.set(path)
+
+    def run_confronto_consuntivo(self):
+        """Esegue confronto forecast vs consuntivo."""
+        consuntivo_path = self.consuntivo_path_var.get()
+        if not consuntivo_path or not os.path.isfile(consuntivo_path):
+            messagebox.showerror("File non valido", "Seleziona un file Excel consuntivo valido")
+            return
+
+        if not self.confronto_df or self.confronto_df.empty:
+            messagebox.showerror("Nessun forecast", "Esegui prima un forecast prima del confronto")
+            return
+
+        if not self.last_output_dirs:
+            messagebox.showerror("Output mancante", "Nessuna cartella output disponibile")
+            return
+
+        output_dir = self.last_output_dirs[0]
+
+        try:
+            self.consuntivo_status.configure(text="Elaborazione confronto in corso...")
+            self.root.update()
+
+            risultato = confronta_forecast_consuntivo(self.confronto_df, consuntivo_path, output_dir)
+
+            if risultato is None:
+                messagebox.showwarning("Nessuna sovrapposizione",
+                                      "Nessuna data in comune tra forecast e consuntivo")
+                self.consuntivo_status.configure(text="Nessuna sovrapposizione rilevata")
+                return
+
+            for item in self.consuntivo_tree.get_children():
+                self.consuntivo_tree.delete(item)
+
+            for modello, metriche in sorted(risultato['metriche'].items(), key=lambda x: x[1]['MAPE']):
+                self.consuntivo_tree.insert('', 'end', values=(
+                    modello,
+                    f"{metriche['MAE']:.1f}",
+                    f"{metriche['MAPE']:.2f}",
+                    f"{metriche['SMAPE']:.2f}",
+                    metriche['n_giorni']
+                ))
+
+            self.confronto_consuntivo_df = risultato['confronto_df']
+            periodo = risultato['periodo_overlap']
+            self.consuntivo_status.configure(
+                text=f"✅ Confronto completato: {periodo[0].strftime('%d/%m/%Y')} - {periodo[1].strftime('%d/%m/%Y')}"
+            )
+
+            messagebox.showinfo("Confronto Completato",
+                               f"Metriche calcolate per {len(risultato['metriche'])} modelli.\n"
+                               f"File salvato: {risultato['output_path'].name}")
+
+        except Exception as e:
+            messagebox.showerror("Errore confronto", f"Errore durante confronto:\n{str(e)}")
+            self.consuntivo_status.configure(text=f"❌ Errore: {str(e)}")
+
+    def _refresh_dashboard_kpi(self, risultati):
+        """Aggiorna il tab Dashboard KPI con i risultati forecast."""
+        if not risultati:
+            return
+
+        r = next((x for x in risultati if x.get('success')), None)
+        if not r:
+            return
+
+        kpi = r.get('kpi', {})
+        forecast_modelli = r.get('forecast_modelli', {})
+
+        confronto = forecast_modelli.get('confronto_df')
+        if confronto is not None and not confronto.empty:
+            best_model = r.get('miglior_modello')
+            forecast_col = best_model if best_model and best_model in confronto.columns else \
+                           [c for c in confronto.columns if c != 'DATA'][0]
+
+            totale_forecast = confronto[forecast_col].sum()
+            self.kpi_widgets['totale'].configure(text=f"{totale_forecast:,.0f}")
+
+            df = r.get('df')
+            if df is not None:
+                daily_historical = df.groupby('DATA')['OFFERTO'].sum()
+                media_storica = daily_historical.mean()
+                media_forecast = confronto[forecast_col].mean()
+                variazione_pct = ((media_forecast - media_storica) / media_storica * 100) if media_storica > 0 else 0
+
+                arrow = "↗" if variazione_pct > 1 else "↘" if variazione_pct < -1 else "→"
+                color = "#48BB78" if variazione_pct > 0 else "#F56565" if variazione_pct < 0 else "#718096"
+                self.kpi_widgets['variazione'].configure(text=f"{variazione_pct:+.1f}% {arrow}", foreground=color)
+
+                soglia_picco = media_storica + 2 * daily_historical.std()
+                n_picchi = (confronto[forecast_col] > soglia_picco).sum()
+                self.kpi_widgets['picchi'].configure(text=str(n_picchi))
+
+                trend_coeff = np.polyfit(range(len(confronto)), confronto[forecast_col].values, 1)[0]
+                if trend_coeff > media_forecast * 0.01:
+                    trend_text = "CRESCITA ↗"
+                    trend_color = "#48BB78"
+                elif trend_coeff < -media_forecast * 0.01:
+                    trend_text = "DECRESCITA ↘"
+                    trend_color = "#F56565"
+                else:
+                    trend_text = "STABILE →"
+                    trend_color = "#718096"
+                self.kpi_widgets['trend'].configure(text=trend_text, foreground=trend_color)
+
+        backtest = forecast_modelli.get('backtest')
+        if backtest:
+            valid_models = {m: v.get('MAPE') for m, v in backtest.items()
+                           if v.get('MAPE') is not None and np.isfinite(v.get('MAPE'))}
+            if valid_models:
+                best_model = min(valid_models, key=valid_models.get)
+                best_mape = valid_models[best_model]
+
+                if best_mape < 5:
+                    mape_text = f"{best_mape:.1f}% ✅"
+                    mape_color = "#48BB78"
+                elif best_mape < 10:
+                    mape_text = f"{best_mape:.1f}% ⚠️"
+                    mape_color = "#ECC94B"
+                else:
+                    mape_text = f"{best_mape:.1f}% 🔴"
+                    mape_color = "#F56565"
+
+                self.kpi_widgets['affidabilita'].configure(text=mape_text, foreground=mape_color)
+                self.kpi_widgets['modello'].configure(text=best_model.upper()[:15])
+
+    def _refresh_alerts(self, risultati):
+        """Aggiorna il tab Alert con nuovi alert rilevati."""
+        for item in self.alert_tree.get_children():
+            self.alert_tree.delete(item)
+
+        self.alerts_list = []
+        for r in risultati:
+            if r.get('success') and 'alerts' in r:
+                self.alerts_list.extend(r['alerts'])
+
+        for alert in self.alerts_list:
+            self.alert_tree.insert('', 'end',
+                                  values=(alert['icona'],
+                                         alert['severita'].upper(),
+                                         alert['titolo'],
+                                         alert['descrizione']),
+                                  tags=(alert['severita'],))
+
+        if not self.alerts_list:
+            self.alert_tree.insert('', 'end',
+                                  values=("✅", "INFO", "Nessun Alert",
+                                         "Nessuna condizione di attenzione rilevata"),
+                                  tags=('bassa',))
 
     def run(self):
         self.root.mainloop()
