@@ -1,0 +1,27 @@
+--- INSPECTING INPUT: input wfmmacro multiskill.xlsx ---
+Loaded Risorse. Columns: ['id dipendente', 'Nome', 'Ore', 'Riposi', 'Inizio fascia', 'Fine fascia', 'sabato', 'domenica', 'OT lun', 'OT mar', 'OT mer', 'OT gio', 'OT ven', 'OT sab', 'OT dom', 'OT Spezz', 'combinazione', 'fuori fascia', 'skill', 'Riposo weekend suggerito', 'Sab lavorati (8w)', 'Dom lavorate (8w)', 'Suggerimento lavoro WE', '% Sab lavorati', '% Dom lavorate', '% Mattine', '% Pomeriggi', '% Sere', 'WE doppi (Sab+Dom)', '% WE doppi (Sab+Dom)', 'Seq Sab 0/1 (old?recent)', 'Seq Dom 0/1 (old?recent)', 'Sab lavorativi nel mese (ult. week)', 'Dom lavorative nel mese (ult. week)', '>7 consecutivi (ult. 2w?)', 'Riposo da pianificare (prossima week)', 'Unnamed: 36']
+Using name column: Nome
+Found Entry in Risorse:
+  Column D (Riposi implied): 2
+  id dipendente: cf13
+  Nome: Ganci Elvira
+  Ore: 4.0
+  combinazione: 5-4-4-4-4
+  Riposi: 2
+  Inizio fascia: 09:00:00
+  Fine fascia: 13:00:00
+  sabato: nan
+  domenica: nan
+
+--- INSPECTING OUTPUT: prova2.xlsx ---
+Loaded Assegnazioni. Columns: ['Skill', 'emp_id', 'CF', 'Operatore', 'Giorno', 'Fascia_Ordinario', 'Base_Inizio', 'Base_Fine', 'Actual_Inizio', 'Actual_Fine', 'OT_min', 'OT_Inizio', 'OT_Fine', 'TurnoID']
+Found 4 shifts assigned:
+    Giorno Fascia_Ordinario              TurnoID
+  Martedì      09:00-13:00 AUTO_09:00-13:00_240
+    Sabato      09:00-13:00 AUTO_09:00-13:00_240
+  Giovedì      09:00-13:00 AUTO_09:00-13:00_240
+Mercoledì      09:00-13:00 AUTO_09:00-13:00_240
+Days worked: ['Martedì', 'Sabato', 'Giovedì', 'Mercoledì']
+
+--- SHEETS IN INPUT FILE ---
+['Requisiti_ps', 'config', 'Requisiti_dc', 'Turni', 'Risorse', 'storico', 'settimana', 'istru', 'Foglio12']

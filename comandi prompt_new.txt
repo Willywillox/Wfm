@@ -1,0 +1,66 @@
+cd C:\Users\wiliam.de.salvatore\OneDrive - Accenture\Desktop\Matrici WIND Dealer\ROLLING\new wfm
+cd "C:\Users\wilia\OneDrive\Desktop\new wfm"
+
+
+python generate_turni_tabella_finale_v4_3.py --input "input wfmmacro dc.xlsm" --out "tabella_turni.xlsx" --grid 15 --prefer_phase "15,45"
+
+
+python generate_turni_tabella_finale_v4_3.py --input "input wfmmacro ps.xlsm" --out "tabella_turni.xlsx" --grid 15 --prefer_phase "15,45"
+
+
+python generate_turni_tabella_finale_v4_6.py --input "input wfmmacro ps.xlsm" --out "tabella_turni.xlsx" --grid 15 --prefer_phase "15,45"
+
+python generate_turni_tabella_finale_v5_1.py --input "input wfmmacro ps.xlsm" --out "tabella_turnips.xlsx" --grid 15 --no-balanced --prefer_phase "15,45"
+
+
+python generate_turni_tabella_finale_v5_1.py --input "input wfmmacro ps.xlsm" --out "output.xlsx" --grid 15
+
+python generate_turni_tabella_finale_v5_0.py --input "input wfmmacro ps.xlsm" --out "output.xlsx" --grid 15
+
+python "c:\Users\wilia\OneDrive\Desktop\new wfm\generate_turni_tabella_finale_v5_0.py" ^
+  --input "c:\Users\wilia\OneDrive\Desktop\new wfm\input wfmmacro ps.xlsm" ^
+  --out "c:\Users\wilia\OneDrive\Desktop\new wfm\tabella_turni.xlsx" ^
+  --grid 15
+
+
+
+
+python generate_turni_tabella_finale_v5_0_codexprove.py --input "input wfmmacro dc.xlsm" --out "outputdc.xlsx" --grid 15 --prefer_phase 15,45 --strict-phase
+
+
+python generate_turni_v5_0_codexprove_v2OT.py --input "input wfmmacro dc.xlsm" --out "outputdc.xlsx" --grid 15 --prefer_phase 15,45 --strict-phase
+
+
+generate_turni_v5_0_codexprove_v2OT
+
+OT lun OT mar OT mer OT gio OT ven OT sab OT dom. ho fatto queste modifiche ho messo queste colonne nel file di input che ti allego nello sheet risorse per indicare il numero di ore per giornata della settimana che possono fare come strao come numero fisso. Nel senso che se c'è 2 ore sul lunedi bisogna mettere 2 ore il lunedi. Si guarda poi alla colonna dello spezzato per capire se teenrlo incollato al turno o si puo separare. Tutto va fatto sempre in base alla domanda. Anche se con lo strao si va in overstaffing si segue la curva relativa ai requisiti. altra cosa per fare l'output dello strao mi serve anche nello sheet pianificazione nel senso che bisogna metter la colonna di inizoi strao come orario e la colonna di fine strao come orario.
+
+
+python generate_turni_v5_0_codexprove_v2OTclaude.py --input "input wfmmacro dc.xlsm" --out "outputdc.xlsx" --grid 15 --prefer_phase 15,45 --strict-phase
+
+
+
+python generate_turni_v5_4_ot_cf_nome.py --input "input wfmmacro dc.xlsm" --out "tabella_turni.xlsx" --grid 15 --prefer_phase 15,45 --strict-phase
+
+
+python generate_turni_v5_5_ot_clean_output_Copia.py --input "input wfmmacro dc.xlsm" --out "tabella_turni.xlsx" --grid 15 --prefer_phase 15,45 --strict-phase --force-ot
+
+python generate_turni_v5_11_ok_only.py --input "input wfmmacro ps.xlsm" --out "tabella_turnipsriprova.xlsx" --grid 15 --prefer_phase 15,45 --strict-phase --force-ot
+
+
+python analisi_trafficonewfct.py   
+
+
+python generate_turni_v5_11_ok_only.py --input "input wfmmacro dc.xlsm" --out "tabella_turniweek44dc_force.xlsx" --grid 15 --prefer_phase 15,45 --strict-phase --force-ot
+
+
+python generate_turni_v5_11_ok_only_cop.py --input "input wfmmacro rbm.xlsm" --out "turninew44rbm.xlsx" --grid 15 --prefer_phase 15,45 --strict-phase --force-ot
+
+
+
+
+python wfm_claudegit6.py --input "input wfmmacro cmb.xlsm" --out "newcmb46.xlsx" --grid 15 --prefer_phase 15,45 --strict-phase --force-balance
+
+
+
+python generate_turni_v5_5_ot_clean_output.py --input "input wfmmacro dc.xlsm" --out "tabella_turni.xlsx" --grid 15 --prefer_phase 15,45 --strict-phase
