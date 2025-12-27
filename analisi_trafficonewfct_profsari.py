@@ -2967,10 +2967,21 @@ def _genera_report_pdf(df, forecast_modelli, backtest_metrics, kpi, output_dir):
         ax1 = plt.subplot2grid((6, 2), (0, 0), colspan=2, rowspan=1)
         ax1.axis('off')
 
+        affidabilita_text = f"{best_mape:.1f}%" if best_mape is not None else "N/D"
+        if best_mape is not None:
+            if best_mape < 5:
+                affidabilita_label = "✅ ECCELLENTE"
+            elif best_mape < 10:
+                affidabilita_label = "⚠️ BUONA"
+            else:
+                affidabilita_label = "🔴 BASSA"
+        else:
+            affidabilita_label = ""
+
         summary_text = f"""
 PERIODO FORECAST: {forecast_best['DATA'].min().strftime('%d/%m/%Y')} - {forecast_best['DATA'].max().strftime('%d/%m/%Y')} ({len(forecast_best)} giorni)
 MODELLO UTILIZZATO: {best_model.upper() if best_model else 'N/D'}
-AFFIDABILITÀ (MAPE): {best_mape:.1f}% {'✅ ECCELLENTE' if best_mape and best_mape < 5 else '⚠️ BUONA' if best_mape and best_mape < 10 else '🔴 BASSA' if best_mape else 'N/D'}
+AFFIDABILITÀ (MAPE): {affidabilita_text} {affidabilita_label}
         """
         ax1.text(0.05, 0.5, summary_text.strip(), fontsize=11, verticalalignment='center',
                 fontfamily='monospace', bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.3))
@@ -3028,8 +3039,11 @@ AFFIDABILITÀ (MAPE): {best_mape:.1f}% {'✅ ECCELLENTE' if best_mape and best_m
             metrics_text = "AFFIDABILITÀ MODELLI:\n" + "-" * 35 + "\n"
             sorted_models = sorted(backtest_metrics.items(), key=lambda x: x[1].get('MAPE', 999))[:5]
             for model, vals in sorted_models:
-                mape = vals.get('MAPE', 0)
-                metrics_text += f"{model[:12]:12s}: {mape:5.1f}% MAPE\n"
+                mape = vals.get('MAPE')
+                if mape is not None:
+                    metrics_text += f"{model[:12]:12s}: {mape:5.1f}% MAPE\n"
+                else:
+                    metrics_text += f"{model[:12]:12s}:   N/D  MAPE\n"
         else:
             metrics_text = "Metriche non disponibili"
 
