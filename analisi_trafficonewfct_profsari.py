@@ -95,17 +95,43 @@ def _log_step_time(label: str, started_at: float):
 @contextmanager
 def safe_excel_writer(path, **kwargs):
     path = Path(path)
+
+    # Prova con engine specificato, se fallisce prova openpyxl
+    engine = kwargs.get('engine', 'xlsxwriter')
+    writer = None
+
     try:
         writer = pd.ExcelWriter(path, **kwargs)
-    except PermissionError:
-        fallback = path.with_name(f"{path.stem}_{datetime.now():%Y%m%d_%H%M%S}.xlsx")
-        print(f"  File {path.name} in uso, salvo come {fallback.name}")
-        writer = pd.ExcelWriter(fallback, **kwargs)
-        path = fallback
+    except (PermissionError, ImportError, ModuleNotFoundError) as e:
+        if isinstance(e, PermissionError):
+            # File in uso, prova con nome alternativo
+            fallback = path.with_name(f"{path.stem}_{datetime.now():%Y%m%d_%H%M%S}.xlsx")
+            print(f"  File {path.name} in uso, salvo come {fallback.name}")
+            path = fallback
+            try:
+                writer = pd.ExcelWriter(path, **kwargs)
+            except (ImportError, ModuleNotFoundError):
+                # Engine non disponibile, prova openpyxl
+                if engine != 'openpyxl':
+                    kwargs_fallback = kwargs.copy()
+                    kwargs_fallback['engine'] = 'openpyxl'
+                    writer = pd.ExcelWriter(path, **kwargs_fallback)
+                else:
+                    raise
+        else:
+            # Engine non disponibile (ImportError/ModuleNotFoundError)
+            if engine != 'openpyxl':
+                kwargs_fallback = kwargs.copy()
+                kwargs_fallback['engine'] = 'openpyxl'
+                writer = pd.ExcelWriter(path, **kwargs_fallback)
+            else:
+                raise
+
     try:
         yield writer, path
     finally:
-        writer.close()
+        if writer is not None:
+            writer.close()
 
 
 def _interval_from_residuals(residuals, forecast_values, alpha=DEFAULT_ALPHA):
@@ -3385,7 +3411,7 @@ def genera_report_riassuntivo(risultati, script_dir):
         output_path = os.path.join(script_dir, 'output', '_report_riassuntivo.xlsx')
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-        with pd.ExcelWriter(output_path, engine='xlsxwriter') as writer:
+        with safe_excel_writer(output_path, engine='xlsxwriter') as (writer, actual_path):
             df_report.to_excel(writer, sheet_name='Riepilogo', index=False)
 
             # Aggiungi foglio con dettagli timestamp
@@ -3397,7 +3423,7 @@ def genera_report_riassuntivo(risultati, script_dir):
             ], columns=['Parametro', 'Valore'])
             info_df.to_excel(writer, sheet_name='Info', index=False)
 
-        print(f"✅ Report riassuntivo salvato: _report_riassuntivo.xlsx")
+        print(f"✅ Report riassuntivo salvato: {actual_path.name}")
 
     except Exception as e:
         print(f"⚠️  Errore generazione report riassuntivo: {e}")
