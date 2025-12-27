@@ -69,6 +69,14 @@ import time
 warnings.filterwarnings('ignore')
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
+# Fix encoding per Windows subprocess (supporto emoji)
+if sys.platform == 'win32':
+    import codecs
+    if sys.stdout.encoding != 'utf-8':
+        sys.stdout.reconfigure(encoding='utf-8')
+    if sys.stderr.encoding != 'utf-8':
+        sys.stderr.reconfigure(encoding='utf-8')
+
 # Parametri globali per IC basate su quantili dei residui
 DEFAULT_ALPHA = 0.10  # 80% central interval by default
 
