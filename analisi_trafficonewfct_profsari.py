@@ -4006,6 +4006,11 @@ class ForecastGUI:
                 finally:
                     FAST_MODE = previous_fast
                 log_writer.write("\n>>> Elaborazione completata, preparo il riepilogo...\n")
+
+                # Conta successi
+                successi = sum(1 for r in risultati if r.get('success', False))
+                totali = len(risultati)
+                log_writer.write(f"\n✅ Elaborazione completata con successo: {successi}/{totali} file processati.\n")
         except Exception as exc:
             log_writer.write(f"\n❌ Errore GUI: {exc}\n")
         finally:
