@@ -4390,7 +4390,7 @@ class ForecastGUI:
 
     def update_interactive_plot(self):
         """Aggiorna il grafico interattivo in base alla selezione."""
-        if not self.confronto_df or self.confronto_df.empty:
+        if self.confronto_df is None or self.confronto_df.empty:
             return
 
         self.interactive_ax.clear()
@@ -4437,7 +4437,7 @@ class ForecastGUI:
             messagebox.showerror("File non valido", "Seleziona un file Excel consuntivo valido")
             return
 
-        if not self.confronto_df or self.confronto_df.empty:
+        if self.confronto_df is None or self.confronto_df.empty:
             messagebox.showerror("Nessun forecast", "Esegui prima un forecast prima del confronto")
             return
 
