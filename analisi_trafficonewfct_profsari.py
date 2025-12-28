@@ -2728,12 +2728,19 @@ def _forecast_ensemble_hybrid(df, tutti_forecast, backtest_metrics, giorni_forec
             forecast_daily_df['CI_UPPER'] = upper
 
         # Distribuzione intraday: usa intraday_dinamico se disponibile, altrimenti pattern storico
+        if produce_outputs:
+            print(f"\n   📊 Distribuzione per fascia oraria...")
+
         if 'intraday_dinamico' in tutti_forecast and tutti_forecast['intraday_dinamico'] is not None:
+            if produce_outputs:
+                print(f"      Trovato modello intraday_dinamico")
             intraday_result = tutti_forecast['intraday_dinamico']
             if isinstance(intraday_result, dict) and 'per_fascia' in intraday_result:
                 # Usa distribuzione intraday dal modello specializzato
                 pattern_intraday = {}
                 fascia_df = intraday_result['per_fascia']
+                if produce_outputs:
+                    print(f"      DataFrame per_fascia: {len(fascia_df)} righe")
 
                 for _, row in fascia_df.iterrows():
                     key = (row['GG_SETT'], row['FASCIA'])
@@ -2745,16 +2752,33 @@ def _forecast_ensemble_hybrid(df, tutti_forecast, backtest_metrics, giorni_forec
                 for key in pattern_intraday:
                     pattern_intraday[key] = np.mean(pattern_intraday[key])
 
+                if produce_outputs:
+                    print(f"      Pattern intraday costruito: {len(pattern_intraday)} chiavi")
+
                 forecast_fascia_df = _distribuisci_forecast_per_fascia(pattern_intraday, forecast_daily_df)
+                if produce_outputs:
+                    print(f"      Forecast per fascia generato: {len(forecast_fascia_df)} righe")
             else:
+                if produce_outputs:
+                    print(f"      intraday_dinamico non ha 'per_fascia', uso pattern storico")
                 pattern_intraday = _costruisci_pattern_intraday(df)
                 forecast_fascia_df = _distribuisci_forecast_per_fascia(pattern_intraday, forecast_daily_df)
+                if produce_outputs:
+                    print(f"      Forecast per fascia da storico: {len(forecast_fascia_df)} righe")
         else:
+            if produce_outputs:
+                print(f"      intraday_dinamico non disponibile, uso pattern storico")
             pattern_intraday = _costruisci_pattern_intraday(df)
+            if produce_outputs:
+                print(f"      Pattern storico costruito: {len(pattern_intraday)} chiavi")
             forecast_fascia_df = _distribuisci_forecast_per_fascia(pattern_intraday, forecast_daily_df)
+            if produce_outputs:
+                print(f"      Forecast per fascia generato: {len(forecast_fascia_df)} righe")
 
         if produce_outputs:
-            print(f"   ✅ Ensemble Hybrid completato: {len(forecast_daily_df)} giorni previsti")
+            print(f"\n   ✅ Ensemble Hybrid completato:")
+            print(f"      Giorni previsti: {len(forecast_daily_df)}")
+            print(f"      Fasce previste: {len(forecast_fascia_df)}")
 
         return {
             'giornaliero': forecast_daily_df,
