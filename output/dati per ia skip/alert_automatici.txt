@@ -1,0 +1,7 @@
+ALERT AUTOMATICI
+================================================================================
+
+📅 [BASSA] Forte Stagionalità Weekend
+Weekend ha volume 44% diverso da weekday. Usa modelli con stagionalità settimanale (Prophet, TBATS).
+--------------------------------------------------------------------------------
+

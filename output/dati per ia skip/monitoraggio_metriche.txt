@@ -1,0 +1,20 @@
+Run del 2025-12-28 15:50:54
+Best model: sarima | MAE=57151570975.59 MAPE=inf% SMAPE=24.83%
+ - holtwinters: MAPE migliore 45.89% a 90 giorni
+ - pattern: MAPE migliore 51.16% a 90 giorni
+ - naive: MAPE migliore 75.55% a 90 giorni
+ - sarima: MAPE migliore 44.11% a 90 giorni
+ - prophet: MAPE migliore 91.88% a 90 giorni
+ - intraday_dinamico: MAPE migliore 44.91% a 90 giorni
+ - ensemble_top2: MAPE migliore 44.51% a 90 giorni
+
+Run del 2025-12-28 16:03:58
+Best model: sarima | MAE=57151570975.59 MAPE=inf% SMAPE=24.83%
+ - holtwinters: MAPE migliore 45.89% a 90 giorni
+ - pattern: MAPE migliore 51.16% a 90 giorni
+ - naive: MAPE migliore 75.55% a 90 giorni
+ - sarima: MAPE migliore 44.11% a 90 giorni
+ - prophet: MAPE migliore 91.88% a 90 giorni
+ - intraday_dinamico: MAPE migliore 44.91% a 90 giorni
+ - ensemble_top2: MAPE migliore 44.51% a 90 giorni
+

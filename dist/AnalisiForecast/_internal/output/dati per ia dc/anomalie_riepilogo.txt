@@ -1,0 +1,12 @@
+ANOMALIE RILEVATE
+================================================================================
+Picchi alti: 1
+Picchi bassi: 10
+
+Top picchi alti:
+  2024-12-27: 1,183 chiamate
+
+Top picchi bassi:
+  2024-11-01: 0 chiamate
+  2024-12-25: 0 chiamate
+  2024-12-26: 0 chiamate

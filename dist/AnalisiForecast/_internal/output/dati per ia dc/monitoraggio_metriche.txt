@@ -1,0 +1,22 @@
+Run del 2025-12-28 22:13:04
+Best model: holtwinters | MAE=154.80 MAPE=inf% SMAPE=35.06%
+ - holtwinters: MAPE migliore inf% a 30 giorni
+ - pattern: MAPE migliore inf% a 30 giorni
+ - naive: MAPE migliore inf% a 30 giorni
+ - sarima: MAPE migliore inf% a 30 giorni
+ - prophet: MAPE migliore inf% a 30 giorni
+ - tbats: MAPE migliore inf% a 30 giorni
+ - intraday_dinamico: MAPE migliore inf% a 30 giorni
+ - ensemble_top2: MAPE migliore inf% a 30 giorni
+
+Run del 2025-12-28 22:24:45
+Best model: holtwinters | MAE=109.49 MAPE=inf% SMAPE=25.40%
+ - holtwinters: MAPE migliore inf% a 14 giorni
+ - pattern: MAPE migliore inf% a 14 giorni
+ - naive: MAPE migliore inf% a 14 giorni
+ - sarima: MAPE migliore inf% a 14 giorni
+ - prophet: MAPE migliore inf% a 14 giorni
+ - tbats: MAPE migliore inf% a 14 giorni
+ - intraday_dinamico: MAPE migliore inf% a 14 giorni
+ - ensemble_top2: MAPE migliore inf% a 14 giorni
+

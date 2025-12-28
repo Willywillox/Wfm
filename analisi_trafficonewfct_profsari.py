@@ -47,7 +47,7 @@ matplotlib.use("Agg")
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
+# import seaborn as sns  # Commentato per compatibilità PyInstaller
 import sys
 import queue
 import threading
@@ -186,26 +186,124 @@ def _fmt(val):
 
 
 # Verifica librerie opzionali
-try:
-    from sklearn.cluster import KMeans
-    from sklearn.preprocessing import StandardScaler
-    from sklearn.ensemble import IsolationForest
-    SKLEARN_AVAILABLE = True
-except ImportError:
-    SKLEARN_AVAILABLE = False
+# Sklearn commentato per compatibilità PyInstaller (causa import scipy.stats)
+# try:
+#     from sklearn.cluster import KMeans
+#     from sklearn.preprocessing import StandardScaler
+#     from sklearn.ensemble import IsolationForest
+#     SKLEARN_AVAILABLE = True
+# except ImportError:
+SKLEARN_AVAILABLE = False  # Disabilitato per PyInstaller
 
+# Scipy: import leggero per verifica disponibilità (stats gestito con patch)
 try:
-    from scipy import stats, signal
+    import scipy  # evita import completo di scipy.stats all'avvio
     SCIPY_AVAILABLE = True
-except ImportError:
+except Exception:
     SCIPY_AVAILABLE = False
+
+def _patch_scipy_distn_code(code_obj):
+    try:
+        import dis
+        code_bytes = bytearray(code_obj.co_code)
+        op_nop = dis.opmap.get("NOP")
+        if op_nop is None:
+            return code_obj
+        patched = False
+        for instr in dis.get_instructions(code_obj, show_caches=True):
+            if instr.opname == "DELETE_NAME" and instr.argval == "obj":
+                code_bytes[instr.offset] = op_nop
+                code_bytes[instr.offset + 1] = 0
+                patched = True
+                break
+        if patched:
+            return code_obj.replace(co_code=bytes(code_bytes))
+    except Exception:
+        return code_obj
+    return code_obj
+
+
+def _install_scipy_obj_guard():
+    import importlib.abc
+
+    class _ScipyDistnGuard(importlib.abc.MetaPathFinder):
+        _TARGET = "scipy.stats._distn_infrastructure"
+
+        def find_spec(self, fullname, path, target=None):
+            if fullname != self._TARGET:
+                return None
+            spec = None
+            for finder in sys.meta_path:
+                if finder is self:
+                    continue
+                find_spec = getattr(finder, "find_spec", None)
+                if not callable(find_spec):
+                    continue
+                try:
+                    spec = find_spec(fullname, path, target)
+                except Exception:
+                    spec = None
+                if spec is not None:
+                    break
+            if spec is None or spec.loader is None:
+                return None
+            original_loader = spec.loader
+
+            class _PatchedLoader(importlib.abc.Loader):
+                def create_module(self, spec):
+                    create = getattr(original_loader, "create_module", None)
+                    if callable(create):
+                        return create(spec)
+                    return None
+
+                def exec_module(self, module):
+                    module.__dict__.setdefault('obj', None)
+                    get_code = getattr(original_loader, "get_code", None)
+                    if callable(get_code):
+                        code = get_code(module.__name__)
+                        if code is not None:
+                            patched_code = _patch_scipy_distn_code(code)
+                            module.__dict__.setdefault('obj', None)
+                            exec(patched_code, module.__dict__)
+                            return
+                    exec_module = getattr(original_loader, "exec_module", None)
+                    if callable(exec_module):
+                        exec_module(module)
+                        return
+                    raise ImportError("Impossibile eseguire loader per scipy.stats._distn_infrastructure")
+
+            spec.loader = _PatchedLoader()
+            return spec
+
+    if not any(isinstance(finder, _ScipyDistnGuard) for finder in sys.meta_path):
+        sys.meta_path.insert(0, _ScipyDistnGuard())
+
+
+if getattr(sys, 'frozen', False) or os.environ.get("FORECAST_PATCH_SCIPY") == "1":
+    _install_scipy_obj_guard()
 
 try:
     from statsmodels.tsa.holtwinters import ExponentialSmoothing
     STATSMODELS_AVAILABLE = True
-except ImportError:
+except Exception as exc:
     STATSMODELS_AVAILABLE = False
     print("ATTENZIONE: statsmodels non disponibile")
+    print(f"Dettaglio: {type(exc).__name__}: {exc}")
+    if os.environ.get("FORECAST_DEBUG_IMPORTS") == "1":
+        import traceback
+        print(f"DEBUG: sys.flags.optimize={getattr(sys.flags, 'optimize', 'n/a')}")
+        debug_trace = traceback.format_exc()
+        print(debug_trace)
+        try:
+            if getattr(sys, 'frozen', False):
+                debug_dir = Path(sys.executable).resolve().parent
+            else:
+                debug_dir = Path(__file__).resolve().parent
+            debug_path = debug_dir / "statsmodels_import_error.txt"
+            debug_path.write_text(f"{debug_trace}\nSYS_PATH:\n" + "\n".join(sys.path), encoding="utf-8")
+            print(f"Dettaglio salvato in: {debug_path}")
+        except Exception:
+            pass
     print("Per forecast avanzato installa: pip install statsmodels")
 
 try:
@@ -236,8 +334,42 @@ except Exception as e:
 # Configurazione grafica
 plt.rcParams['figure.figsize'] = (15, 8)
 plt.rcParams['font.size'] = 10
-sns.set_style("whitegrid")
-sns.set_palette("husl")
+# sns.set_style("whitegrid")  # Commentato per compatibilità PyInstaller
+# sns.set_palette("husl")  # Commentato per compatibilità PyInstaller
+try:
+    plt.style.use('seaborn-v0_8-whitegrid')  # Usa stile matplotlib nativo invece
+except:
+    plt.style.use('ggplot')  # Fallback se seaborn-v0_8 non disponibile
+
+# Palette colori moderna e leggibile
+plt.rcParams['axes.prop_cycle'] = plt.cycler(color=[
+    '#4E79A7', '#F28E2B', '#E15759', '#76B7B2',
+    '#59A14F', '#EDC949', '#AF7AA1', '#FF9DA7',
+    '#9C755F', '#BAB0AC'
+])
+plt.rcParams['figure.facecolor'] = 'white'
+plt.rcParams['savefig.facecolor'] = 'white'
+plt.rcParams['axes.facecolor'] = '#fbfbfb'
+plt.rcParams['axes.edgecolor'] = '#d0d0d0'
+plt.rcParams['axes.linewidth'] = 0.8
+plt.rcParams['axes.grid'] = True
+plt.rcParams['axes.axisbelow'] = True
+plt.rcParams['grid.color'] = '#e6e6e6'
+plt.rcParams['grid.linewidth'] = 0.8
+plt.rcParams['grid.alpha'] = 0.8
+plt.rcParams['axes.spines.top'] = False
+plt.rcParams['axes.spines.right'] = False
+plt.rcParams['axes.titleweight'] = 'bold'
+plt.rcParams['axes.titlesize'] = 13
+plt.rcParams['axes.labelsize'] = 11
+plt.rcParams['xtick.labelsize'] = 9
+plt.rcParams['ytick.labelsize'] = 9
+plt.rcParams['legend.frameon'] = True
+plt.rcParams['legend.framealpha'] = 0.9
+plt.rcParams['legend.facecolor'] = 'white'
+plt.rcParams['legend.edgecolor'] = '#d0d0d0'
+plt.rcParams['lines.linewidth'] = 2.0
+plt.rcParams['lines.solid_capstyle'] = 'round'
 
 # =============================================================================
 # TROVA FILE EXCEL
@@ -249,19 +381,34 @@ def trova_file_excel(custom_dirs=None):
     Se custom_dirs è valorizzato, cerca nei percorsi indicati;
     altrimenti usa la cartella dello script e la sottocartella ``file input``.
     """
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    script_dir = Path(__file__).resolve().parent
 
     search_roots = []
+    seen = set()
+
+    def _add_root(path):
+        if not path or not os.path.isdir(path):
+            return
+        norm = os.path.normcase(os.path.normpath(path))
+        if norm in seen:
+            return
+        seen.add(norm)
+        search_roots.append(path)
+
     if custom_dirs:
         for path in custom_dirs:
-            if path and os.path.isdir(path):
-                search_roots.append(path)
+            if path:
+                _add_root(os.path.abspath(path))
 
     if not search_roots:
-        search_roots.append(script_dir)
-        input_dir = os.path.join(script_dir, "file input")
-        if os.path.isdir(input_dir):
-            search_roots.append(input_dir)
+        candidates = [Path.cwd()]
+        if getattr(sys, 'frozen', False):
+            candidates.append(Path(sys.executable).resolve().parent)
+        candidates.append(script_dir)
+
+        for base in candidates:
+            _add_root(str(base))
+            _add_root(str(base / "file input"))
 
     patterns = ["*.xlsx", "*.xlsm", "*.xls"]
     file_excel = []
@@ -493,7 +640,12 @@ def crea_heatmap(df, output_dir):
     pivot = pivot[fasce_ordinate]
     
     plt.figure(figsize=(20, 8))
-    sns.heatmap(pivot, annot=False, cmap='YlOrRd', cbar_kws={'label': 'Chiamate Medie'}, linewidths=0.5)
+    # sns.heatmap(pivot, annot=False, cmap='YlOrRd', cbar_kws={'label': 'Chiamate Medie'}, linewidths=0.5)
+    # Usa matplotlib imshow invece di seaborn heatmap
+    plt.imshow(pivot.T, cmap='YlOrRd', aspect='auto', interpolation='nearest')
+    plt.colorbar(label='Chiamate Medie')
+    plt.xticks(range(len(pivot.index)), pivot.index, rotation=0)
+    plt.yticks(range(len(pivot.columns)), pivot.columns)
     plt.title('Heatmap: Giorno x Fascia Oraria', fontsize=14, fontweight='bold', pad=20)
     plt.xlabel('Fascia Oraria')
     plt.ylabel('Giorno Settimana')
@@ -3947,7 +4099,12 @@ def main(giorni_forecast=28, escludi_festivita=None, input_dirs=None, metodi=Non
     print("=" * 80)
 
     # Trova tutti i file Excel
-    file_excel_list = trova_file_excel(custom_dirs=input_dirs)
+    try:
+        file_excel_list = trova_file_excel(custom_dirs=input_dirs)
+    except FileNotFoundError as exc:
+        print(f"ERRORE: {exc}")
+        print("Suggerimento: usa --input-dir <cartella> oppure copia i file Excel vicino all'eseguibile o in 'file input'.")
+        return []
 
     if len(file_excel_list) == 0:
         print("❌ Nessun file Excel trovato!")
@@ -4190,6 +4347,11 @@ class ForecastGUI:
         self.image_label = None
         self.image_caption = None
         self.current_image = None
+        self.plots_canvas = None
+        self.plots_controls_frame = None
+        self._current_plot_path = None
+        self._current_plot_full = None
+        self._last_plot_canvas_size = (0, 0)
         self.last_output_dirs = []
         self.compare_tree = None
         self.metric_tree = None
@@ -4213,6 +4375,10 @@ class ForecastGUI:
         self.interactive_ax = None
         self.interactive_canvas = None
         self.interactive_toolbar = None
+        self.interactive_container_canvas = None
+        self._interactive_header_label = None
+        self._interactive_toolbar_frame = None
+        self._last_interactive_canvas_size = (0, 0)
         self.dashboard_preview_label = None
 
         # Zoom functionality
@@ -4350,9 +4516,18 @@ class ForecastGUI:
 
         # Abilita scroll con mouse wheel
         def on_mousewheel(event):
-            selector_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+            selector_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
-        selector_canvas.bind_all("<MouseWheel>", on_mousewheel)
+        def _bind_mousewheel(event):
+            selector_canvas.bind_all("<MouseWheel>", on_mousewheel)
+
+        def _unbind_mousewheel(event):
+            selector_canvas.unbind_all("<MouseWheel>")
+
+        selector_canvas.bind("<Enter>", _bind_mousewheel)
+        selector_canvas.bind("<Leave>", _unbind_mousewheel)
+        selector_scrollable.bind("<Enter>", _bind_mousewheel)
+        selector_scrollable.bind("<Leave>", _unbind_mousewheel)
 
         # SEZIONE 1: RACCOMANDAZIONE AUTOMATICA
         raccomandazione_frame = ttk.LabelFrame(selector_scrollable, text="✅ RACCOMANDAZIONE AUTOMATICA", padding=15)
@@ -4536,12 +4711,17 @@ class ForecastGUI:
 
         # ========== TAB GRAFICI INTERATTIVI ==========
         interactive_canvas, interactive_scrollable = self._create_scrollable_frame(tab_plots_interactive)
+        self.interactive_container_canvas = interactive_canvas
 
-        ttk.Label(interactive_scrollable, text="Grafici Interattivi con Zoom/Pan",
-                 font=("Helvetica", 14, "bold")).pack(pady=10)
+        self._interactive_header_label = ttk.Label(
+            interactive_scrollable, text="Grafici Interattivi con Zoom/Pan",
+            font=("Helvetica", 14, "bold")
+        )
+        self._interactive_header_label.pack(pady=10)
 
         toolbar_frame = ttk.Frame(interactive_scrollable)
         toolbar_frame.pack(fill="x", padx=10, pady=5)
+        self._interactive_toolbar_frame = toolbar_frame
 
         ttk.Label(toolbar_frame, text="Seleziona grafico:").pack(side="left", padx=5)
         plot_types = [
@@ -4553,7 +4733,8 @@ class ForecastGUI:
             ttk.Radiobutton(toolbar_frame, text=text, variable=self.plot_type_var,
                            value=val, command=self.update_interactive_plot).pack(side="left", padx=5)
 
-        self.interactive_fig = Figure(figsize=(12, 6), dpi=100)
+        self.interactive_fig = Figure(figsize=(12, 6), dpi=100, facecolor="white")
+        self.interactive_fig.set_tight_layout(True)
         self.interactive_ax = self.interactive_fig.add_subplot(111)
         self.interactive_canvas = FigureCanvasTkAgg(self.interactive_fig, master=interactive_scrollable)
         self.interactive_canvas.get_tk_widget().pack(fill="both", expand=True, padx=10, pady=5)
@@ -4564,6 +4745,7 @@ class ForecastGUI:
         self.interactive_ax.text(0.5, 0.5, 'Esegui forecast per visualizzare grafici interattivi',
                                 ha='center', va='center', fontsize=12, color='gray')
         self.interactive_canvas.draw()
+        self.interactive_container_canvas.bind("<Configure>", self._on_interactive_container_resize, add="+")
 
         # ========== TAB CONFRONTO CONSUNTIVO ==========
         consuntivo_canvas, consuntivo_scrollable = self._create_scrollable_frame(tab_consuntivo)
@@ -4599,9 +4781,11 @@ class ForecastGUI:
 
         # ========== TAB GRAFICI PNG ==========
         plots_canvas, plots_scrollable = self._create_scrollable_frame(tab_plots)
+        self.plots_canvas = plots_canvas
 
         combo_frame = ttk.Frame(plots_scrollable, padding=10)
         combo_frame.pack(fill="x")
+        self.plots_controls_frame = combo_frame
         ttk.Label(combo_frame, text="Seleziona grafico PNG dall'ultimo output:").pack(side="left")
         self.plot_combo = ttk.Combobox(combo_frame, textvariable=self.plot_var, width=70, state="readonly")
         self.plot_combo.pack(side="left", padx=5, fill="x", expand=True)
@@ -4611,6 +4795,7 @@ class ForecastGUI:
         self.image_label.pack(pady=6)
         self.image_caption = ttk.Label(plots_scrollable, font=("Helvetica", 9, "italic"))
         self.image_caption.pack()
+        self.plots_canvas.bind("<Configure>", self._on_plots_canvas_resize, add="+")
 
         compare_canvas, compare_scrollable = self._create_scrollable_frame(tab_compare)
 
@@ -5042,6 +5227,9 @@ class ForecastGUI:
             self.plot_var.set("")
             self.image_label.configure(image="")
             self.image_caption.configure(text="")
+            self.current_image = None
+            self._current_plot_path = None
+            self._current_plot_full = None
 
     def refresh_comparisons(self):
         if self.confronto_df is None:
@@ -5203,26 +5391,95 @@ class ForecastGUI:
             messagebox.showinfo("Nessun grafico", "Esegui una run per caricare i grafici disponibili.")
             return
 
-        try:
-            img = tk.PhotoImage(file=path)
-        except Exception as exc:
-            messagebox.showerror("Errore apertura grafico", str(exc))
+        self._render_plot_image(path)
+
+    def _render_plot_image(self, path):
+        if not path or not os.path.isfile(path):
             return
 
-        max_w, max_h = 900, 520
-        w, h = img.width(), img.height()
+        if self._current_plot_path != path or self._current_plot_full is None:
+            try:
+                self._current_plot_full = tk.PhotoImage(file=path)
+            except Exception as exc:
+                messagebox.showerror("Errore apertura grafico", str(exc))
+                self._current_plot_path = None
+                self._current_plot_full = None
+                return
+            self._current_plot_path = path
+
+        base_img = self._current_plot_full
+        w, h = base_img.width(), base_img.height()
+
+        if self.plots_canvas is None:
+            max_w, max_h = 900, 520
+        else:
+            self.root.update_idletasks()
+            canvas_w = self.plots_canvas.winfo_width()
+            canvas_h = self.plots_canvas.winfo_height()
+            if canvas_w <= 1 or canvas_h <= 1:
+                canvas_w, canvas_h = 900, 520
+            controls_h = 0
+            if self.plots_controls_frame is not None:
+                controls_h += self.plots_controls_frame.winfo_height()
+            if self.image_caption is not None:
+                controls_h += self.image_caption.winfo_height()
+            controls_h += 30
+            max_w = max(canvas_w - 40, 320)
+            max_h = max(canvas_h - controls_h, 240)
+
         scale = max(w / max_w, h / max_h, 1)
         displayed_w, displayed_h = w, h
         if scale > 1:
             factor = int(math.ceil(scale))
-            img = img.subsample(factor, factor)
+            img = base_img.subsample(factor, factor)
             displayed_w = max(1, w // factor)
             displayed_h = max(1, h // factor)
+        else:
+            img = base_img
 
         self.current_image = img
         self.image_label.configure(image=img)
         caption = f"{os.path.basename(path)}  ({displayed_w}x{displayed_h} px visualizzati)"
         self.image_caption.configure(text=caption)
+
+    def _on_plots_canvas_resize(self, event):
+        size = (event.width, event.height)
+        if size == self._last_plot_canvas_size:
+            return
+        self._last_plot_canvas_size = size
+        if self._current_plot_path:
+            self._render_plot_image(self._current_plot_path)
+
+    def _resize_interactive_figure(self, draw=False):
+        if self.interactive_container_canvas is None or self.interactive_fig is None:
+            return
+        self.root.update_idletasks()
+        canvas_w = self.interactive_container_canvas.winfo_width()
+        canvas_h = self.interactive_container_canvas.winfo_height()
+        if canvas_w <= 1 or canvas_h <= 1:
+            return
+
+        header_h = 0
+        toolbar_h = 0
+        if self._interactive_header_label is not None:
+            header_h = self._interactive_header_label.winfo_height()
+        if self._interactive_toolbar_frame is not None:
+            toolbar_h = self._interactive_toolbar_frame.winfo_height()
+
+        max_w = max(canvas_w - 40, 320)
+        max_h = max(canvas_h - header_h - toolbar_h - 40, 240)
+        dpi = self.interactive_fig.get_dpi()
+        self.interactive_fig.set_size_inches(max_w / dpi, max_h / dpi, forward=True)
+        if draw and self.interactive_canvas is not None:
+            self.interactive_fig.tight_layout()
+            self.interactive_canvas.draw_idle()
+
+    def _on_interactive_container_resize(self, event):
+        size = (event.width, event.height)
+        if size == self._last_interactive_canvas_size:
+            return
+        self._last_interactive_canvas_size = size
+        self._resize_interactive_figure(draw=True)
 
     def _create_scrollable_frame(self, parent):
         """
@@ -5249,11 +5506,20 @@ class ForecastGUI:
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
-        # Mouse wheel scrolling
+        # Mouse wheel scrolling (bind only while cursor is over this area)
         def on_mousewheel(event):
-            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
-        canvas.bind_all("<MouseWheel>", on_mousewheel)
+        def _bind_mousewheel(event):
+            canvas.bind_all("<MouseWheel>", on_mousewheel)
+
+        def _unbind_mousewheel(event):
+            canvas.unbind_all("<MouseWheel>")
+
+        canvas.bind("<Enter>", _bind_mousewheel)
+        canvas.bind("<Leave>", _unbind_mousewheel)
+        scrollable_frame.bind("<Enter>", _bind_mousewheel)
+        scrollable_frame.bind("<Leave>", _unbind_mousewheel)
 
         return canvas, scrollable_frame
 
@@ -5281,7 +5547,9 @@ class ForecastGUI:
 
         if plot_type == "forecast_comparison":
             model_cols = [c for c in self.confronto_df.columns if c != 'DATA']
-            colors = ['#2E86AB', '#A23B72', '#F18F01', '#6A994E', '#BC4B51', '#8B5CF6', '#C73E1D']
+            colors = plt.rcParams['axes.prop_cycle'].by_key().get('color', [])
+            if not colors:
+                colors = ['#2E86AB', '#A23B72', '#F18F01', '#6A994E', '#BC4B51', '#8B5CF6', '#C73E1D']
 
             for i, model in enumerate(model_cols[:7]):
                 self.interactive_ax.plot(self.confronto_df['DATA'], self.confronto_df[model],
@@ -5302,6 +5570,8 @@ class ForecastGUI:
 
         self.interactive_ax.grid(True, alpha=0.3)
         self.interactive_fig.autofmt_xdate()
+        self._resize_interactive_figure(draw=False)
+        self.interactive_fig.tight_layout()
         self.interactive_canvas.draw()
 
     def browse_consuntivo(self):
@@ -5591,6 +5861,7 @@ if __name__ == "__main__":
     parser.add_argument('--input-dir', type=str, help='Cartella con file Excel di input', default=None)
     parser.add_argument('--fast', action='store_true', help='Modalità veloce')
     parser.add_argument('--gui', action='store_true', help='Avvia interfaccia grafica')
+    parser.add_argument('--cli', action='store_true', help='Forza avvio in modalita console (no GUI)')
     args, unknown = parser.parse_known_args()
 
     # Aggiorna variabili globali in base agli argomenti
@@ -5598,7 +5869,13 @@ if __name__ == "__main__":
         FAST_MODE = True
         os.environ["FORECAST_FAST"] = "1"
     
+    use_gui = False
     if args.gui or os.environ.get("FORECAST_GUI") == "1":
+        use_gui = True
+    elif getattr(sys, 'frozen', False) and not args.cli:
+        use_gui = True
+
+    if use_gui:
         gui = ForecastGUI()
         gui.run()
         sys.exit(0)

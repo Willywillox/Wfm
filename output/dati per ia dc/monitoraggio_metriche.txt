@@ -1,0 +1,83 @@
+Run del 2025-12-28 15:51:17
+Best model: holtwinters | MAE=109.49 MAPE=inf% SMAPE=25.40%
+ - holtwinters: MAPE migliore inf% a 14 giorni
+ - pattern: MAPE migliore inf% a 14 giorni
+ - naive: MAPE migliore inf% a 14 giorni
+ - sarima: MAPE migliore inf% a 14 giorni
+ - prophet: MAPE migliore inf% a 14 giorni
+ - intraday_dinamico: MAPE migliore inf% a 14 giorni
+ - ensemble_top2: MAPE migliore inf% a 14 giorni
+
+Run del 2025-12-28 16:04:53
+Best model: holtwinters | MAE=109.49 MAPE=inf% SMAPE=25.40%
+ - holtwinters: MAPE migliore inf% a 14 giorni
+ - pattern: MAPE migliore inf% a 14 giorni
+ - naive: MAPE migliore inf% a 14 giorni
+ - sarima: MAPE migliore inf% a 14 giorni
+ - prophet: MAPE migliore inf% a 14 giorni
+ - intraday_dinamico: MAPE migliore inf% a 14 giorni
+ - ensemble_top2: MAPE migliore inf% a 14 giorni
+
+Run del 2025-12-28 17:38:09
+Best model: holtwinters | MAE=190.22 MAPE=inf% SMAPE=41.29%
+ - holtwinters: MAPE migliore inf% a 30 giorni
+ - pattern: MAPE migliore inf% a 30 giorni
+ - naive: MAPE migliore inf% a 30 giorni
+ - sarima: MAPE migliore inf% a 30 giorni
+ - prophet: MAPE migliore inf% a 30 giorni
+ - intraday_dinamico: MAPE migliore inf% a 30 giorni
+ - ensemble_top2: MAPE migliore inf% a 30 giorni
+
+Run del 2025-12-28 17:49:52
+Best model: holtwinters | MAE=154.80 MAPE=inf% SMAPE=35.06%
+ - holtwinters: MAPE migliore inf% a 30 giorni
+ - pattern: MAPE migliore inf% a 30 giorni
+ - naive: MAPE migliore inf% a 30 giorni
+ - sarima: MAPE migliore inf% a 30 giorni
+ - prophet: MAPE migliore inf% a 30 giorni
+ - intraday_dinamico: MAPE migliore inf% a 30 giorni
+ - ensemble_top2: MAPE migliore inf% a 30 giorni
+
+Run del 2025-12-28 17:58:38
+Best model: holtwinters | MAE=190.22 MAPE=inf% SMAPE=41.29%
+ - holtwinters: MAPE migliore inf% a 30 giorni
+ - pattern: MAPE migliore inf% a 30 giorni
+ - naive: MAPE migliore inf% a 30 giorni
+ - sarima: MAPE migliore inf% a 30 giorni
+ - prophet: MAPE migliore inf% a 30 giorni
+ - intraday_dinamico: MAPE migliore inf% a 30 giorni
+ - ensemble_top2: MAPE migliore inf% a 30 giorni
+
+Run del 2025-12-28 18:12:46
+Best model: holtwinters | MAE=190.22 MAPE=inf% SMAPE=41.29%
+ - holtwinters: MAPE migliore inf% a 30 giorni
+ - pattern: MAPE migliore inf% a 30 giorni
+ - naive: MAPE migliore inf% a 30 giorni
+ - sarima: MAPE migliore inf% a 30 giorni
+ - prophet: MAPE migliore inf% a 30 giorni
+ - tbats: MAPE migliore inf% a 30 giorni
+ - intraday_dinamico: MAPE migliore inf% a 30 giorni
+ - ensemble_top2: MAPE migliore inf% a 30 giorni
+
+Run del 2025-12-28 19:52:35
+Best model: holtwinters | MAE=154.80 MAPE=inf% SMAPE=35.06%
+ - holtwinters: MAPE migliore inf% a 30 giorni
+ - pattern: MAPE migliore inf% a 30 giorni
+ - naive: MAPE migliore inf% a 30 giorni
+ - sarima: MAPE migliore inf% a 30 giorni
+ - prophet: MAPE migliore inf% a 30 giorni
+ - tbats: MAPE migliore inf% a 30 giorni
+ - intraday_dinamico: MAPE migliore inf% a 30 giorni
+ - ensemble_top2: MAPE migliore inf% a 30 giorni
+
+Run del 2025-12-28 20:06:25
+Best model: holtwinters | MAE=154.80 MAPE=inf% SMAPE=35.06%
+ - holtwinters: MAPE migliore inf% a 30 giorni
+ - pattern: MAPE migliore inf% a 30 giorni
+ - naive: MAPE migliore inf% a 30 giorni
+ - sarima: MAPE migliore inf% a 30 giorni
+ - prophet: MAPE migliore inf% a 30 giorni
+ - tbats: MAPE migliore inf% a 30 giorni
+ - intraday_dinamico: MAPE migliore inf% a 30 giorni
+ - ensemble_top2: MAPE migliore inf% a 30 giorni
+

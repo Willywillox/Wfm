@@ -1,0 +1,17 @@
+REPORT FINALE
+================================================================================
+Totale chiamate: 583,635
+Trend: Decrescita
+Fascia picco: 10.00 - 10.30
+
+FORECAST GIORNALIERO:
+Periodo: 2025-11-01 - 2025-11-30
+Totale previsto: 37,770 chiamate
+Media giornaliera: 1,259.0 chiamate
+
+Top 5 giorni previsti:
+  2025-11-25 (mar): 1,817 chiamate
+  2025-11-18 (mar): 1,817 chiamate
+  2025-11-11 (mar): 1,816 chiamate
+  2025-11-04 (mar): 1,815 chiamate
+  2025-11-26 (mer): 1,761 chiamate

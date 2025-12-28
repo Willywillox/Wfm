@@ -1,0 +1,39 @@
+REPORT STATISTICO
+================================================================================
+Periodo analizzato: 2024-10-14 - 2025-10-31
+Totale chiamate: 583,635
+Media per slot: 63.49
+
+Andamento recente
+--------------------------------------------------------------------------------
+Ultima settimana (W52): -49.7%
+Ultimo mese (October 2025): +2.7%
+Weekend vs Weekday: -61.7%
+Trend lineare: Decrescita (coefficiente -0.18)
+
+Fasce orarie più rilevanti (media per slot)
+--------------------------------------------------------------------------------
+  10.00 - 10.30: 99.4 chiamate (totale 38,077)
+  11.30 - 12.00: 99.3 chiamate (totale 38,024)
+  10.30 - 11.00: 97.6 chiamate (totale 37,372)
+
+Giorni della settimana più intensi
+--------------------------------------------------------------------------------
+  mar: 109,381 chiamate totali (media 82.9)
+  mer: 106,381 chiamate totali (media 80.6)
+  gio: 100,944 chiamate totali (media 76.5)
+
+Giorno con maggiore volume: 2025-07-01 (mar): 2,541
+Giorno con minore volume: 2024-11-01 (ven): 0
+Fascia di picco: 10.00 - 10.30 (99.4 chiamate medie)
+
+Anomalie principali
+--------------------------------------------------------------------------------
+Picchi alti:
+  2025-07-01: 2,541
+  2024-11-13: 2,534
+  2025-06-03: 2,528
+Picchi bassi:
+  2025-04-21: 3
+  2025-04-23: 14
+  2025-08-15: 32
