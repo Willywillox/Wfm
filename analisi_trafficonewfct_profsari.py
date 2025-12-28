@@ -3746,20 +3746,35 @@ class ForecastGUI:
                  font=("Helvetica", 16, "bold")).pack(pady=10)
 
         # Container principale con scrollbar
-        selector_canvas = tk.Canvas(tab_model_selector)
+        selector_canvas = tk.Canvas(tab_model_selector, highlightthickness=0)
         selector_scrollbar = ttk.Scrollbar(tab_model_selector, orient="vertical", command=selector_canvas.yview)
         selector_scrollable = ttk.Frame(selector_canvas)
 
-        selector_scrollable.bind(
-            "<Configure>",
-            lambda e: selector_canvas.configure(scrollregion=selector_canvas.bbox("all"))
-        )
+        # Aggiorna scrollregion quando il contenuto cambia
+        def on_frame_configure(event):
+            selector_canvas.configure(scrollregion=selector_canvas.bbox("all"))
 
-        selector_canvas.create_window((0, 0), window=selector_scrollable, anchor="nw")
+        selector_scrollable.bind("<Configure>", on_frame_configure)
+
+        # Crea finestra nel canvas
+        canvas_window = selector_canvas.create_window((0, 0), window=selector_scrollable, anchor="nw")
+
+        # Adatta larghezza frame alla larghezza canvas
+        def on_canvas_configure(event):
+            canvas_width = event.width
+            selector_canvas.itemconfig(canvas_window, width=canvas_width)
+
+        selector_canvas.bind("<Configure>", on_canvas_configure)
         selector_canvas.configure(yscrollcommand=selector_scrollbar.set)
 
         selector_canvas.pack(side="left", fill="both", expand=True)
         selector_scrollbar.pack(side="right", fill="y")
+
+        # Abilita scroll con mouse wheel
+        def on_mousewheel(event):
+            selector_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+
+        selector_canvas.bind_all("<MouseWheel>", on_mousewheel)
 
         # SEZIONE 1: RACCOMANDAZIONE AUTOMATICA
         raccomandazione_frame = ttk.LabelFrame(selector_scrollable, text="✅ RACCOMANDAZIONE AUTOMATICA", padding=15)
