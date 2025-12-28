@@ -2374,6 +2374,73 @@ def _calcola_ensemble_pesato(confronto_df, modelli, backtest_metrics):
         
     return weighted_sum
 
+
+def _correggi_forecast_con_storico(forecast_df, df_storico, soglia_minima=5):
+    """
+    Corregge il forecast basandosi sui pattern storici degli stessi giorni dell'anno.
+
+    Se nello storico un certo giorno/mese (es. 1 novembre) aveva SEMPRE volume molto basso
+    (< soglia_minima), allora anche il forecast per quel giorno viene azzerato.
+
+    Args:
+        forecast_df: DataFrame con colonne ['DATA', 'FORECAST', ...]
+        df_storico: DataFrame storico originale con colonne ['DATA', 'OFFERTO']
+        soglia_minima: soglia sotto cui considerare il giorno "chiuso" (default: 5 chiamate)
+
+    Returns:
+        DataFrame forecast corretto
+    """
+    # Aggrega storico per giorno
+    daily_storico = df_storico.groupby('DATA')['OFFERTO'].sum().reset_index()
+
+    # Per ogni giorno nello storico, estrai mese/giorno
+    daily_storico['MESE_GIORNO'] = daily_storico['DATA'].dt.strftime('%m-%d')
+
+    # Identifica giorni che sono SEMPRE stati chiusi/quasi chiusi (< soglia)
+    giorni_chiusi = daily_storico.groupby('MESE_GIORNO').agg({
+        'OFFERTO': ['count', 'mean', 'max']
+    }).reset_index()
+    giorni_chiusi.columns = ['MESE_GIORNO', 'occorrenze', 'media', 'massimo']
+
+    # Un giorno è "chiuso" se:
+    # - La media è < soglia_minima E
+    # - Il massimo storico è < soglia_minima * 2 (per evitare falsi positivi)
+    # - Ha almeno 1 occorrenza nello storico
+    giorni_da_azzerare = giorni_chiusi[
+        (giorni_chiusi['media'] < soglia_minima) &
+        (giorni_chiusi['massimo'] < soglia_minima * 2) &
+        (giorni_chiusi['occorrenze'] >= 1)
+    ]['MESE_GIORNO'].tolist()
+
+    if not giorni_da_azzerare:
+        return forecast_df  # Nessuna correzione necessaria
+
+    # Applica correzione al forecast
+    forecast_corretto = forecast_df.copy()
+    forecast_corretto['MESE_GIORNO'] = forecast_corretto['DATA'].dt.strftime('%m-%d')
+
+    mask_azzerare = forecast_corretto['MESE_GIORNO'].isin(giorni_da_azzerare)
+    n_giorni_azzerati = mask_azzerare.sum()
+
+    if n_giorni_azzerati > 0:
+        # Azzera la colonna FORECAST
+        forecast_corretto.loc[mask_azzerare, 'FORECAST'] = 0
+
+        # Azzera anche CI_LOWER e CI_UPPER se presenti
+        if 'CI_LOWER' in forecast_corretto.columns:
+            forecast_corretto.loc[mask_azzerare, 'CI_LOWER'] = 0
+        if 'CI_UPPER' in forecast_corretto.columns:
+            forecast_corretto.loc[mask_azzerare, 'CI_UPPER'] = 0
+
+        print(f"   🔧 Corretti {n_giorni_azzerati} giorni di forecast basandosi su pattern storico")
+        print(f"      Giorni azzerati: {', '.join(sorted(set(forecast_corretto[mask_azzerare]['DATA'].dt.strftime('%d/%m'))))}")
+
+    # Rimuovi colonna temporanea
+    forecast_corretto = forecast_corretto.drop(columns=['MESE_GIORNO'])
+
+    return forecast_corretto
+
+
 def genera_forecast_modelli(df, output_dir, giorni_forecast=28, metodi=None, escludi_festivita=None, fast_mode=False):
     """
     Esegue più modelli di forecast in parallelo e produce un confronto.
@@ -2452,6 +2519,14 @@ def genera_forecast_modelli(df, output_dir, giorni_forecast=28, metodi=None, esc
             if result is not None and 'giornaliero' in result and not result['giornaliero'].empty:
                 success = True
                 detail = detail or "Completato"
+
+                # ✨ NUOVO: Correggi forecast basandosi su pattern storico (giorni chiusi)
+                result['giornaliero'] = _correggi_forecast_con_storico(
+                    result['giornaliero'],
+                    df,
+                    soglia_minima=5
+                )
+
                 daily_df = result['giornaliero'][['DATA', 'FORECAST']].copy()
                 daily_df.rename(columns={'FORECAST': metodo}, inplace=True)
                 confronto_frames.append(daily_df)
