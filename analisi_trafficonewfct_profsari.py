@@ -2112,8 +2112,61 @@ def _forecast_tbats(df, giorni_forecast=28, produce_outputs=False):
 
     except Exception as exc:
         if produce_outputs:
-            print(f"   TBATS fallito: {exc}")
-        return None
+            print(f"   ⚠️ TBATS standard fallito: {exc}")
+            print(f"      Tipo errore: {type(exc).__name__}")
+
+        # FALLBACK: Prova configurazione più semplice e robusta
+        try:
+            if produce_outputs:
+                print(f"   🔄 Tentativo fallback TBATS con configurazione semplificata...")
+
+            # Configurazione minimalista: solo stagionalità settimanale, no trend, no ARMA
+            estimator_simple = TBATS(
+                seasonal_periods=[7],  # Solo weekly
+                use_trend=False,  # Disabilita trend per stabilità
+                use_box_cox=False,
+                use_arma_errors=False,  # Disabilita ARMA per stabilità
+                n_jobs=1  # Single thread per evitare problemi parallelizzazione
+            )
+
+            fitted_model = estimator_simple.fit(daily['OFFERTO'].values)
+            forecast_values, conf_int = fitted_model.forecast(steps=giorni_forecast, confidence_level=0.95)
+
+            last_date = daily['DATA'].max()
+            future_dates = pd.date_range(start=last_date + timedelta(days=1), periods=giorni_forecast, freq='D')
+
+            forecast_daily_df = pd.DataFrame({
+                'DATA': future_dates,
+                'FORECAST': forecast_values,
+                'GG_SETT': [['lun','mar','mer','gio','ven','sab','dom'][d.weekday()] for d in future_dates],
+                'CI_LOWER': np.clip(conf_int['lower_bound'], a_min=0, a_max=None),
+                'CI_UPPER': np.clip(conf_int['upper_bound'], a_min=0, a_max=None)
+            })
+
+            pattern_intraday = _costruisci_pattern_intraday(df)
+            forecast_fascia_df = _distribuisci_forecast_per_fascia(pattern_intraday, forecast_daily_df)
+
+            if produce_outputs:
+                print(f"   ✅ TBATS fallback completato (solo stagionalità settimanale)")
+
+            return {
+                'giornaliero': forecast_daily_df,
+                'per_fascia': forecast_fascia_df,
+                'model': fitted_model
+            }
+
+        except Exception as exc_fallback:
+            if produce_outputs:
+                print(f"   ❌ Anche TBATS fallback fallito: {exc_fallback}")
+                print(f"      Dati disponibili: {len(daily)} giorni")
+                # Suggerimenti basati sul tipo di errore
+                if "singular matrix" in str(exc_fallback).lower() or "linalg" in str(exc_fallback).lower():
+                    print(f"      💡 Suggerimento: Dati troppo regolari o pattern troppo debole")
+                elif "memory" in str(exc_fallback).lower():
+                    print(f"      💡 Suggerimento: Usa FAST_MODE o riduci giorni_forecast")
+                elif "nan" in str(exc_fallback).lower() or "inf" in str(exc_fallback).lower():
+                    print(f"      💡 Suggerimento: Verifica valori zero/negativi nei dati")
+            return None
 
 
 def _salva_forecast_excel(output_dir, nome_file, forecast_data):
@@ -2737,23 +2790,35 @@ def _forecast_ensemble_hybrid(df, tutti_forecast, backtest_metrics, giorni_forec
             intraday_result = tutti_forecast['intraday_dinamico']
             if isinstance(intraday_result, dict) and 'per_fascia' in intraday_result:
                 # Usa distribuzione intraday dal modello specializzato
-                pattern_intraday = {}
                 fascia_df = intraday_result['per_fascia']
                 if produce_outputs:
                     print(f"      DataFrame per_fascia: {len(fascia_df)} righe")
 
-                for _, row in fascia_df.iterrows():
-                    key = (row['GG_SETT'], row['FASCIA'])
-                    if key not in pattern_intraday:
-                        pattern_intraday[key] = []
-                    pattern_intraday[key].append(row['FORECAST'])
+                # Raggruppa per giorno settimana e calcola pattern percentuali
+                pattern_intraday = {}
+                ordine_giorni = ['lun', 'mar', 'mer', 'gio', 'ven', 'sab', 'dom']
 
-                # Media per chiave
-                for key in pattern_intraday:
-                    pattern_intraday[key] = np.mean(pattern_intraday[key])
+                for giorno in ordine_giorni:
+                    df_giorno = fascia_df[fascia_df['GG_SETT'] == giorno].copy()
+                    if len(df_giorno) == 0:
+                        continue
+
+                    # Calcola media per fascia e percentuale sul totale giornaliero
+                    pattern_fascia = df_giorno.groupby(['FASCIA', 'MINUTI'])['FORECAST'].mean().reset_index()
+                    pattern_fascia = pattern_fascia.sort_values('MINUTI')
+
+                    totale_giorno = pattern_fascia['FORECAST'].sum()
+                    if totale_giorno > 0:
+                        pattern_fascia['PERCENTUALE'] = pattern_fascia['FORECAST'] / totale_giorno
+                    else:
+                        pattern_fascia['PERCENTUALE'] = 0
+
+                    # Rinomina FORECAST in OFFERTO per compatibilità con _distribuisci_forecast_per_fascia
+                    pattern_fascia.rename(columns={'FORECAST': 'OFFERTO'}, inplace=True)
+                    pattern_intraday[giorno] = pattern_fascia
 
                 if produce_outputs:
-                    print(f"      Pattern intraday costruito: {len(pattern_intraday)} chiavi")
+                    print(f"      Pattern intraday costruito: {len(pattern_intraday)} giorni")
 
                 forecast_fascia_df = _distribuisci_forecast_per_fascia(pattern_intraday, forecast_daily_df)
                 if produce_outputs:
