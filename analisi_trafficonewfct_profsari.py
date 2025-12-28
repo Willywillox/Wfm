@@ -2895,6 +2895,10 @@ def genera_forecast_modelli(df, output_dir, giorni_forecast=28, metodi=None, esc
                 else:
                     detail = "Intraday dinamico non disponibile (dipendenze o dati insufficienti)"
                     print(f"   ⚠️  Forecast Intraday Dinamico non generato (verifica messaggi sopra)")
+            elif metodo == 'ensemble_hybrid' or metodo == 'hybrid':
+                # Ensemble hybrid viene eseguito DOPO il backtest, non qui nel loop
+                print(f"   ⏭️  Ensemble Hybrid verrà calcolato dopo il backtest...")
+                continue
             else:
                 print(f"   Metodo forecast '{metodo}' non riconosciuto, ignorato.")
                 risultati[metodo] = None
