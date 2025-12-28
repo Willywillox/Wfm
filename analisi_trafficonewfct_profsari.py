@@ -2386,7 +2386,21 @@ def _estrai_componenti_modello(df, forecast_df, nome_modello):
     Returns:
         dict con chiavi: 'trend', 'weekly', 'monthly', 'residual'
     """
-    if forecast_df is None or 'FORECAST' not in forecast_df.columns:
+    if forecast_df is None:
+        return None
+
+    # Se è un dict, prendi il DataFrame 'giornaliero'
+    if isinstance(forecast_df, dict):
+        if 'giornaliero' in forecast_df:
+            forecast_df = forecast_df['giornaliero']
+        else:
+            return None
+
+    # Ora verifica che sia un DataFrame con le colonne corrette
+    if not isinstance(forecast_df, pd.DataFrame):
+        return None
+
+    if 'FORECAST' not in forecast_df.columns:
         return None
 
     try:
@@ -2578,17 +2592,8 @@ def _forecast_ensemble_hybrid(df, tutti_forecast, backtest_metrics, giorni_forec
                     print(f"      ⚠️ '{nome_modello}': risultato None, saltato")
                 continue
 
-            # Estrai DataFrame giornaliero
-            if isinstance(forecast_result, dict) and 'giornaliero' in forecast_result:
-                forecast_df = forecast_result['giornaliero']
-                if produce_outputs:
-                    print(f"      ✓ '{nome_modello}': DataFrame giornaliero trovato ({len(forecast_df)} righe)")
-            else:
-                forecast_df = forecast_result
-                if produce_outputs:
-                    print(f"      ✓ '{nome_modello}': usando result diretto")
-
-            comp = _estrai_componenti_modello(df, forecast_df, nome_modello)
+            # _estrai_componenti_modello gestisce sia dict che DataFrame
+            comp = _estrai_componenti_modello(df, forecast_result, nome_modello)
             if comp is not None:
                 componenti[nome_modello] = comp
                 if produce_outputs:
