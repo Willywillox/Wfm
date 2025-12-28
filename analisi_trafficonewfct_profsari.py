@@ -2565,26 +2565,44 @@ def _forecast_ensemble_hybrid(df, tutti_forecast, backtest_metrics, giorni_forec
     try:
         if produce_outputs:
             print("   🎯 Ensemble Hybrid: analisi componenti...")
+            print(f"   Modelli ricevuti: {list(tutti_forecast.keys())}")
 
         # Estrai componenti da ogni modello
         componenti = {}
         for nome_modello, forecast_result in tutti_forecast.items():
+            if produce_outputs:
+                print(f"   Elaborazione modello '{nome_modello}'...")
+
             if forecast_result is None:
+                if produce_outputs:
+                    print(f"      ⚠️ '{nome_modello}': risultato None, saltato")
                 continue
 
             # Estrai DataFrame giornaliero
             if isinstance(forecast_result, dict) and 'giornaliero' in forecast_result:
                 forecast_df = forecast_result['giornaliero']
+                if produce_outputs:
+                    print(f"      ✓ '{nome_modello}': DataFrame giornaliero trovato ({len(forecast_df)} righe)")
             else:
                 forecast_df = forecast_result
+                if produce_outputs:
+                    print(f"      ✓ '{nome_modello}': usando result diretto")
 
             comp = _estrai_componenti_modello(df, forecast_df, nome_modello)
             if comp is not None:
                 componenti[nome_modello] = comp
+                if produce_outputs:
+                    print(f"      ✅ '{nome_modello}': componenti estratte")
+            else:
+                if produce_outputs:
+                    print(f"      ⚠️ '{nome_modello}': estrazione componenti fallita")
+
+        if produce_outputs:
+            print(f"\n   Componenti estratte da {len(componenti)} modelli: {list(componenti.keys())}")
 
         if len(componenti) < 2:
             if produce_outputs:
-                print("   ⚠️ Ensemble hybrid: componenti insufficienti")
+                print(f"   ⚠️ Ensemble hybrid: componenti insufficienti (servono almeno 2, trovate {len(componenti)})")
             return None
 
         # Valuta ogni componente
@@ -2932,7 +2950,12 @@ def genera_forecast_modelli(df, output_dir, giorni_forecast=28, metodi=None, esc
 
     # ✨ NUOVO: Ensemble Hybrid - combina le migliori componenti di ogni modello
     if 'ensemble_hybrid' in metodi or 'hybrid' in metodi:
-        print("\n   🎯 Calcolo Ensemble Hybrid (migliori componenti)...")
+        print("\n" + "="*80)
+        print("🎯 ENSEMBLE HYBRID - COMBINAZIONE COMPONENTI MIGLIORI")
+        print("="*80)
+        print(f"   Modelli disponibili per analisi: {list(risultati.keys())}")
+        print(f"   Backtest metrics disponibili: {list(backtest_metrics.keys()) if backtest_metrics else 'Nessuno'}")
+
         try:
             hybrid_result = _forecast_ensemble_hybrid(
                 df,
@@ -2941,7 +2964,11 @@ def genera_forecast_modelli(df, output_dir, giorni_forecast=28, metodi=None, esc
                 giorni_forecast,
                 produce_outputs=True
             )
+
+            print(f"\n   Risultato ensemble_hybrid: {type(hybrid_result)}")
+
             if hybrid_result is not None:
+                print(f"   ✅ Ensemble Hybrid generato con successo!")
                 risultati['ensemble_hybrid'] = hybrid_result
 
                 # Aggiungi al confronto
@@ -2950,15 +2977,17 @@ def genera_forecast_modelli(df, output_dir, giorni_forecast=28, metodi=None, esc
                     hybrid_daily.rename(columns={'FORECAST': 'ensemble_hybrid'}, inplace=True)
                     confronto = confronto.merge(hybrid_daily, on='DATA', how='outer')
                     confronto = confronto.sort_values('DATA')
+                    print(f"   ✅ Aggiunto al confronto modelli")
 
                 # Salva file
                 actual_path = _salva_forecast_excel(output_dir, 'forecast_ensemble_hybrid.xlsx', hybrid_result)
-                print(f"   ✅ Forecast Ensemble Hybrid salvato: {actual_path.name}")
+                print(f"   ✅ Forecast Ensemble Hybrid salvato: {actual_path}")
 
                 # Aggiungi metadata al riepilogo
                 if 'metadata' in hybrid_result:
                     meta = hybrid_result['metadata']
                     detail = f"Best: weekly={meta.get('best_weekly', 'N/A')}, monthly={meta.get('best_monthly', 'N/A')}, trend={meta.get('best_trend', 'N/A')}, volume={meta.get('best_volume', 'N/A')}"
+                    print(f"   📊 {detail}")
                 else:
                     detail = "Completato"
 
@@ -2967,20 +2996,27 @@ def genera_forecast_modelli(df, output_dir, giorni_forecast=28, metodi=None, esc
                     'successo': True,
                     'dettaglio': detail
                 })
+                print("="*80 + "\n")
             else:
                 print(f"   ⚠️ Ensemble Hybrid non generato (richiede almeno 2 modelli base)")
+                print(f"   Debug: risultati keys = {list(risultati.keys())}")
                 stati_modelli.append({
                     'metodo': 'ensemble_hybrid',
                     'successo': False,
                     'dettaglio': "Richiede almeno 2 modelli base"
                 })
+                print("="*80 + "\n")
         except Exception as exc:
-            print(f"   ❌ Errore Ensemble Hybrid: {exc}")
+            import traceback
+            print(f"   ❌ ERRORE Ensemble Hybrid: {exc}")
+            print(f"   Traceback completo:")
+            traceback.print_exc()
             stati_modelli.append({
                 'metodo': 'ensemble_hybrid',
                 'successo': False,
                 'dettaglio': f"Errore: {exc}"
             })
+            print("="*80 + "\n")
 
     ensemble_models = []
     if confronto is not None:
