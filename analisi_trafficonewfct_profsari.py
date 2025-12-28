@@ -3643,6 +3643,10 @@ class ForecastGUI:
         self.interactive_toolbar = None
         self.dashboard_preview_label = None
 
+        # Zoom functionality
+        self.zoom_level = 0  # -5 to +5 range
+        self.base_font_sizes = {}  # Store original font sizes
+
         self._build_layout()
         # Avvia subito il polling della coda log per evitare corse tra thread
         # e consentire di mostrare qualsiasi messaggio già emesso sul prompt.
@@ -3728,9 +3732,11 @@ class ForecastGUI:
         notebook.add(tab_guide, text="📚 Guida modelli")
 
         # ========== TAB DASHBOARD KPI ==========
-        ttk.Label(tab_dashboard, text="Dashboard KPI Forecast", font=("Helvetica", 16, "bold")).pack(pady=10)
+        dashboard_canvas, dashboard_scrollable = self._create_scrollable_frame(tab_dashboard)
 
-        kpi_frame = ttk.Frame(tab_dashboard, padding=10)
+        ttk.Label(dashboard_scrollable, text="Dashboard KPI Forecast", font=("Helvetica", 16, "bold")).pack(pady=10)
+
+        kpi_frame = ttk.Frame(dashboard_scrollable, padding=10)
         kpi_frame.pack(fill="both", expand=True)
 
         # Griglia 2x3 per KPI cards
@@ -3926,13 +3932,15 @@ class ForecastGUI:
         casiduso_text.config(state="disabled")
 
         # ========== TAB ALERT ==========
-        ttk.Label(tab_alert, text="Alert e Avvisi Automatici", font=("Helvetica", 14, "bold")).pack(pady=10)
+        alert_canvas, alert_scrollable = self._create_scrollable_frame(tab_alert)
 
-        alert_info = ttk.Label(tab_alert, text="Sistema di monitoraggio automatico per identificare condizioni di attenzione",
+        ttk.Label(alert_scrollable, text="Alert e Avvisi Automatici", font=("Helvetica", 14, "bold")).pack(pady=10)
+
+        alert_info = ttk.Label(alert_scrollable, text="Sistema di monitoraggio automatico per identificare condizioni di attenzione",
                               font=("Helvetica", 9, "italic"))
         alert_info.pack()
 
-        self.alert_tree = ttk.Treeview(tab_alert, columns=("icona", "severita", "titolo", "descrizione"),
+        self.alert_tree = ttk.Treeview(alert_scrollable, columns=("icona", "severita", "titolo", "descrizione"),
                                        show='headings', height=15)
         self.alert_tree.heading("icona", text="")
         self.alert_tree.heading("severita", text="Severità")
@@ -3950,15 +3958,17 @@ class ForecastGUI:
 
         self.alert_tree.pack(fill="both", expand=True, padx=10, pady=10)
 
-        legend_frame = ttk.Frame(tab_alert)
+        legend_frame = ttk.Frame(alert_scrollable)
         legend_frame.pack(fill="x", padx=10, pady=(0, 10))
         ttk.Label(legend_frame, text="🔴 Alta  |  ⚠️ Media  |  ℹ️ Bassa", font=("Helvetica", 9)).pack()
 
         # ========== TAB GRAFICI INTERATTIVI ==========
-        ttk.Label(tab_plots_interactive, text="Grafici Interattivi con Zoom/Pan",
+        interactive_canvas, interactive_scrollable = self._create_scrollable_frame(tab_plots_interactive)
+
+        ttk.Label(interactive_scrollable, text="Grafici Interattivi con Zoom/Pan",
                  font=("Helvetica", 14, "bold")).pack(pady=10)
 
-        toolbar_frame = ttk.Frame(tab_plots_interactive)
+        toolbar_frame = ttk.Frame(interactive_scrollable)
         toolbar_frame.pack(fill="x", padx=10, pady=5)
 
         ttk.Label(toolbar_frame, text="Seleziona grafico:").pack(side="left", padx=5)
@@ -3973,10 +3983,10 @@ class ForecastGUI:
 
         self.interactive_fig = Figure(figsize=(12, 6), dpi=100)
         self.interactive_ax = self.interactive_fig.add_subplot(111)
-        self.interactive_canvas = FigureCanvasTkAgg(self.interactive_fig, master=tab_plots_interactive)
+        self.interactive_canvas = FigureCanvasTkAgg(self.interactive_fig, master=interactive_scrollable)
         self.interactive_canvas.get_tk_widget().pack(fill="both", expand=True, padx=10, pady=5)
 
-        self.interactive_toolbar = NavigationToolbar2Tk(self.interactive_canvas, tab_plots_interactive)
+        self.interactive_toolbar = NavigationToolbar2Tk(self.interactive_canvas, interactive_scrollable)
         self.interactive_toolbar.update()
 
         self.interactive_ax.text(0.5, 0.5, 'Esegui forecast per visualizzare grafici interattivi',
@@ -3984,10 +3994,12 @@ class ForecastGUI:
         self.interactive_canvas.draw()
 
         # ========== TAB CONFRONTO CONSUNTIVO ==========
-        ttk.Label(tab_consuntivo, text="Confronto Forecast vs Consuntivo Effettivo",
+        consuntivo_canvas, consuntivo_scrollable = self._create_scrollable_frame(tab_consuntivo)
+
+        ttk.Label(consuntivo_scrollable, text="Confronto Forecast vs Consuntivo Effettivo",
                  font=("Helvetica", 14, "bold")).pack(pady=10)
 
-        consuntivo_frame = ttk.Frame(tab_consuntivo, padding=10)
+        consuntivo_frame = ttk.Frame(consuntivo_scrollable, padding=10)
         consuntivo_frame.pack(fill="x")
 
         ttk.Label(consuntivo_frame, text="File Excel Consuntivo:").pack(side="left")
@@ -3995,7 +4007,7 @@ class ForecastGUI:
         ttk.Button(consuntivo_frame, text="Sfoglia", command=self.browse_consuntivo).pack(side="left", padx=2)
         ttk.Button(consuntivo_frame, text="Esegui Confronto", command=self.run_confronto_consuntivo).pack(side="left", padx=5)
 
-        self.consuntivo_tree = ttk.Treeview(tab_consuntivo,
+        self.consuntivo_tree = ttk.Treeview(consuntivo_scrollable,
                                             columns=("modello", "mae", "mape", "smape", "n_giorni"),
                                             show='headings', height=10)
         self.consuntivo_tree.heading("modello", text="Modello")
@@ -4009,30 +4021,34 @@ class ForecastGUI:
 
         self.consuntivo_tree.pack(fill="both", expand=True, padx=10, pady=10)
 
-        self.consuntivo_status = ttk.Label(tab_consuntivo, text="Seleziona file consuntivo per avviare confronto",
+        self.consuntivo_status = ttk.Label(consuntivo_scrollable, text="Seleziona file consuntivo per avviare confronto",
                                           font=("Helvetica", 9, "italic"))
         self.consuntivo_status.pack(pady=5)
 
-        # ========== TAB GRAFICI PNG (esistente, nessuna modifica) ==========
-        combo_frame = ttk.Frame(tab_plots, padding=10)
+        # ========== TAB GRAFICI PNG ==========
+        plots_canvas, plots_scrollable = self._create_scrollable_frame(tab_plots)
+
+        combo_frame = ttk.Frame(plots_scrollable, padding=10)
         combo_frame.pack(fill="x")
         ttk.Label(combo_frame, text="Seleziona grafico PNG dall'ultimo output:").pack(side="left")
         self.plot_combo = ttk.Combobox(combo_frame, textvariable=self.plot_var, width=70, state="readonly")
         self.plot_combo.pack(side="left", padx=5, fill="x", expand=True)
         ttk.Button(combo_frame, text="Mostra", command=self.show_plot).pack(side="left")
 
-        self.image_label = ttk.Label(tab_plots)
+        self.image_label = ttk.Label(plots_scrollable)
         self.image_label.pack(pady=6)
-        self.image_caption = ttk.Label(tab_plots, font=("Helvetica", 9, "italic"))
+        self.image_caption = ttk.Label(plots_scrollable, font=("Helvetica", 9, "italic"))
         self.image_caption.pack()
 
-        compare_controls = ttk.Frame(tab_compare, padding=10)
+        compare_canvas, compare_scrollable = self._create_scrollable_frame(tab_compare)
+
+        compare_controls = ttk.Frame(compare_scrollable, padding=10)
         compare_controls.pack(fill="x")
         ttk.Label(compare_controls, text="Granularità confronto:").pack(side="left")
         ttk.Combobox(compare_controls, textvariable=self.period_var, values=['giorno', 'settimana', 'mese'], state='readonly', width=12, justify='center').pack(side="left", padx=5)
         ttk.Button(compare_controls, text="Aggiorna confronto", command=self.refresh_comparisons).pack(side="left")
 
-        self.compare_tree = ttk.Treeview(tab_compare, columns=("periodo", "modello", "forecast", "mape"), show='headings', height=10)
+        self.compare_tree = ttk.Treeview(compare_scrollable, columns=("periodo", "modello", "forecast", "mape"), show='headings', height=10)
         for col, lbl in zip(self.compare_tree['columns'], ["Periodo", "Modello", "Forecast", "MAPE (%)"]):
             self.compare_tree.heading(col, text=lbl)
         self.compare_tree.pack(fill="both", expand=True, padx=10, pady=4)
@@ -4042,20 +4058,20 @@ class ForecastGUI:
         self.compare_tree.tag_configure('yellow', background='#FEFCBF')  # Giallo chiaro
         self.compare_tree.tag_configure('red', background='#FED7D7')     # Rosso chiaro
 
-        ttk.Label(tab_compare, text="Indici di affidabilità (backtest)", font=("Helvetica", 10, "bold")).pack(pady=(6, 0))
-        self.metric_tree = ttk.Treeview(tab_compare, columns=("modello", "mae", "mape", "smape"), show='headings', height=6)
+        ttk.Label(compare_scrollable, text="Indici di affidabilità (backtest)", font=("Helvetica", 10, "bold")).pack(pady=(6, 0))
+        self.metric_tree = ttk.Treeview(compare_scrollable, columns=("modello", "mae", "mape", "smape"), show='headings', height=6)
         for col, lbl in zip(self.metric_tree['columns'], ["Modello", "MAE", "MAPE", "SMAPE"]):
             self.metric_tree.heading(col, text=lbl)
         self.metric_tree.pack(fill="both", expand=True, padx=10, pady=4)
 
-        ttk.Label(tab_compare, text="Metriche per orizzonte (MAPE/MAE/SMAPE)", font=("Helvetica", 10, "bold")).pack(pady=(6, 0))
-        self.metric_horizon_tree = ttk.Treeview(tab_compare, columns=("modello", "horizon", "mae", "mape", "smape"), show='headings', height=7)
+        ttk.Label(compare_scrollable, text="Metriche per orizzonte (MAPE/MAE/SMAPE)", font=("Helvetica", 10, "bold")).pack(pady=(6, 0))
+        self.metric_horizon_tree = ttk.Treeview(compare_scrollable, columns=("modello", "horizon", "mae", "mape", "smape"), show='headings', height=7)
         for col, lbl in zip(self.metric_horizon_tree['columns'], ["Modello", "Orizzonte", "MAE", "MAPE", "SMAPE"]):
             self.metric_horizon_tree.heading(col, text=lbl)
         self.metric_horizon_tree.pack(fill="both", expand=True, padx=10, pady=4)
 
         # --- NEW: Best Bet & Insights Section ---
-        insight_frame = ttk.LabelFrame(tab_compare, text="💡 Best Bet & Actionable Insights", padding=10)
+        insight_frame = ttk.LabelFrame(compare_scrollable, text="💡 Best Bet & Actionable Insights", padding=10)
         insight_frame.pack(fill="x", padx=10, pady=10)
 
         # Best Bet Highlight
@@ -4076,9 +4092,11 @@ class ForecastGUI:
         self.txt_recommendation.configure(state="disabled")
         # ----------------------------------------
 
-        ttk.Label(tab_compare, textvariable=self.best_detail_var, font=("Helvetica", 10, "italic"), foreground="#555").pack(pady=(2, 8))
+        ttk.Label(compare_scrollable, textvariable=self.best_detail_var, font=("Helvetica", 10, "italic"), foreground="#555").pack(pady=(2, 8))
 
-        guide_text = ScrolledText(tab_guide, wrap=tk.WORD, height=20)
+        guide_canvas, guide_scrollable = self._create_scrollable_frame(tab_guide)
+
+        guide_text = ScrolledText(guide_scrollable, wrap=tk.WORD, height=20)
         guide_text.pack(fill="both", expand=True, padx=10, pady=10)
         guide_text.insert(tk.END, """Guida rapida ai modelli disponibili:\n\n"
                                  "- holtwinters: stagionalità settimanale, veloce e robusto.\n"
@@ -4092,24 +4110,58 @@ class ForecastGUI:
                                  "Suggerimento: scegli i modelli dal pannello iniziale, escludi le festività non più valide e confronta le curve per giorno/settimana/mese insieme agli indici di affidabilità.""")
         guide_text.configure(state='disabled')
 
-        output_intro = ttk.Label(tab_output, text="File principali generati (doppio click per aprire)", font=("Helvetica", 10, "bold"))
+        output_canvas, output_scrollable = self._create_scrollable_frame(tab_output)
+
+        output_intro = ttk.Label(output_scrollable, text="File principali generati (doppio click per aprire)", font=("Helvetica", 10, "bold"))
         output_intro.pack(pady=(8, 4))
-        self.output_tree = ttk.Treeview(tab_output, columns=("nome", "tipo", "path"), show='headings', height=12)
+        self.output_tree = ttk.Treeview(output_scrollable, columns=("nome", "tipo", "path"), show='headings', height=12)
         for col, lbl, width in zip(self.output_tree['columns'], ["File", "Tipo", "Percorso"], [200, 100, 400]):
             self.output_tree.heading(col, text=lbl)
             self.output_tree.column(col, width=width, anchor='w')
         self.output_tree.pack(fill="both", expand=True, padx=10, pady=4)
         self.output_tree.bind('<Double-1>', self._open_selected_output)
-        ttk.Button(tab_output, text="Apri file selezionato", command=self._open_selected_output).pack(pady=(0, 10))
+        ttk.Button(output_scrollable, text="Apri file selezionato", command=self._open_selected_output).pack(pady=(0, 10))
 
-        log_hint = ttk.Label(tab_log, text="Avanzamento in tempo reale (replica il prompt)", font=("Helvetica", 10, "bold"))
+        log_canvas, log_scrollable = self._create_scrollable_frame(tab_log)
+
+        log_hint = ttk.Label(log_scrollable, text="Avanzamento in tempo reale (replica il prompt)", font=("Helvetica", 10, "bold"))
         log_hint.pack(pady=(8, 4))
-        log_actions = ttk.Frame(tab_log)
+        log_actions = ttk.Frame(log_scrollable)
         log_actions.pack(fill="x", padx=10)
         ttk.Button(log_actions, text="Cancella log", command=lambda: self.log_widget.delete("1.0", tk.END)).pack(side="left")
         ttk.Button(log_actions, text="Copia log", command=self._copy_log).pack(side="left", padx=(6, 0))
-        self.log_widget = ScrolledText(tab_log, height=18)
+        self.log_widget = ScrolledText(log_scrollable, height=18)
         self.log_widget.pack(fill="both", expand=True, padx=10, pady=6)
+
+        # Setup zoom keybindings
+        self.root.bind("<Control-plus>", lambda e: self._zoom_in())
+        self.root.bind("<Control-equal>", lambda e: self._zoom_in())  # Ctrl+= (same key as +)
+        self.root.bind("<Control-minus>", lambda e: self._zoom_out())
+        self.root.bind("<Control-0>", lambda e: self._zoom_reset())
+
+    def _zoom_in(self):
+        """Aumenta lo zoom (Ctrl+)"""
+        if self.zoom_level < 5:
+            self.zoom_level += 1
+            self._apply_zoom()
+
+    def _zoom_out(self):
+        """Diminuisce lo zoom (Ctrl-)"""
+        if self.zoom_level > -5:
+            self.zoom_level -= 1
+            self._apply_zoom()
+
+    def _zoom_reset(self):
+        """Reset zoom (Ctrl+0)"""
+        self.zoom_level = 0
+        self._apply_zoom()
+
+    def _apply_zoom(self):
+        """Applica il livello di zoom corrente a tutti i widget"""
+        # This is a simplified implementation that updates font sizes
+        # For a complete implementation, we would need to traverse all widgets
+        # and update their fonts. For now, this provides the framework.
+        pass
 
     def browse_input(self):
         path = filedialog.askdirectory(title="Seleziona cartella input")
@@ -4599,6 +4651,39 @@ class ForecastGUI:
         self.image_label.configure(image=img)
         caption = f"{os.path.basename(path)}  ({displayed_w}x{displayed_h} px visualizzati)"
         self.image_caption.configure(text=caption)
+
+    def _create_scrollable_frame(self, parent):
+        """
+        Crea un frame scrollable riutilizzabile con supporto mouse wheel.
+        Returns: tuple: (canvas, scrollable_frame)
+        """
+        canvas = tk.Canvas(parent, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+
+        def on_frame_configure(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        scrollable_frame.bind("<Configure>", on_frame_configure)
+        canvas_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+
+        def on_canvas_configure(event):
+            canvas_width = event.width
+            canvas.itemconfig(canvas_window, width=canvas_width)
+
+        canvas.bind("<Configure>", on_canvas_configure)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        # Mouse wheel scrolling
+        def on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+
+        canvas.bind_all("<MouseWheel>", on_mousewheel)
+
+        return canvas, scrollable_frame
 
     def _create_kpi_card(self, parent, title, initial_value, color, row, col):
         """Crea una card KPI stilizzata."""
