@@ -2644,47 +2644,64 @@ def _forecast_ensemble_hybrid(df, tutti_forecast, backtest_metrics, giorni_forec
             print(f"      Trend: {best_trend} (score: {scores_trend.get(best_trend, 'N/A'):.3f})")
             print(f"      Volume totale: {best_volume} (score: {scores_volume.get(best_volume, 'N/A'):.3f})")
 
-        # Costruisci forecast combinato
+        # Costruisci forecast combinato usando i forecast DIRETTI dei modelli migliori
         last_date = df['DATA'].max()
         future_dates = pd.date_range(start=last_date + timedelta(days=1), periods=giorni_forecast, freq='D')
 
-        # Base: volume medio storico
-        daily_hist = df.groupby('DATA')['OFFERTO'].sum()
-        base_volume = daily_hist.mean()
+        # STRATEGIA MIGLIORATA:
+        # 1. Usa forecast diretto dal modello con volume migliore come BASE
+        # 2. Aggiusta pattern settimanale se un altro modello è migliore
+        # 3. Aggiusta trend se un altro modello è migliore
+        # Non sovrapporre moltiplicazioni che fanno esplodere i valori!
 
-        # Applica correzione volume dal modello migliore
+        if produce_outputs:
+            print(f"\n   🔨 Costruzione forecast combinato...")
+
+        # Parti dal forecast del modello migliore per volume come base
         if best_volume and best_volume in componenti:
-            volume_factor = componenti[best_volume]['forecast_vals'].mean() / max(base_volume, 1)
+            base_forecast = componenti[best_volume]['forecast_vals'].copy()
+            if produce_outputs:
+                print(f"      Base: forecast da '{best_volume}' (media: {base_forecast.mean():.2f})")
         else:
-            volume_factor = 1.0
+            # Fallback: media di tutti i modelli
+            all_forecasts = [comp['forecast_vals'] for comp in componenti.values()]
+            base_forecast = np.mean(all_forecasts, axis=0)
+            if produce_outputs:
+                print(f"      Base: media di tutti i modelli (media: {base_forecast.mean():.2f})")
 
-        # Costruisci forecast finale
         forecast_vals = []
         for i, date in enumerate(future_dates):
+            if i >= len(base_forecast):
+                break
+
+            value = base_forecast[i]
             dow = date.dayofweek
-            dom = date.day - 1  # 0-indexed
 
-            # Base
-            value = base_volume * volume_factor
+            # Aggiustamento pattern settimanale SOLO se diverso modello è migliore
+            if best_weekly and best_weekly != best_volume and best_weekly in componenti:
+                # Calcola rapporto tra pattern settimanale dei due modelli
+                best_weekly_pattern = componenti[best_weekly]['weekly_pattern'][dow]
+                base_weekly_pattern = componenti[best_volume]['weekly_pattern'][dow] if best_volume in componenti else 1.0
 
-            # Applica pattern settimanale
-            if best_weekly and best_weekly in componenti:
-                weekly_factor = componenti[best_weekly]['weekly_pattern'][dow]
-                value *= weekly_factor
+                if abs(base_weekly_pattern) > 0.1:  # Evita divisione per zero
+                    weekly_adjustment = best_weekly_pattern / base_weekly_pattern
+                    # Limita l'aggiustamento a +/- 50% per evitare esplosioni
+                    weekly_adjustment = max(0.5, min(1.5, weekly_adjustment))
+                    value *= weekly_adjustment
 
-            # Applica pattern mensile (additivo, non moltiplicativo)
-            if best_monthly and best_monthly in componenti:
-                monthly_adjustment = componenti[best_monthly]['monthly_pattern'][dom]
-                value *= monthly_adjustment
+            # Aggiustamento trend SOLO se diverso modello è migliore
+            if best_trend and best_trend != best_volume and best_trend in componenti:
+                trend_comp_best = componenti[best_trend]['trend']
+                trend_comp_base = componenti[best_volume]['trend'] if best_volume in componenti else None
 
-            # Applica trend
-            if best_trend and best_trend in componenti:
-                trend_component = componenti[best_trend]['trend']
-                if len(trend_component) > 0:
-                    # Estendi trend linearmente
-                    trend_slope = (trend_component[-1] - trend_component[0]) / max(len(trend_component) - 1, 1)
-                    trend_adjustment = trend_slope * i
-                    value += trend_adjustment
+                if len(trend_comp_best) > 0 and trend_comp_base is not None and len(trend_comp_base) > 0:
+                    # Differenza di trend tra i due modelli
+                    trend_best_slope = (trend_comp_best[-1] - trend_comp_best[0]) / max(len(trend_comp_best) - 1, 1)
+                    trend_base_slope = (trend_comp_base[-1] - trend_comp_base[0]) / max(len(trend_comp_base) - 1, 1)
+                    trend_diff = trend_best_slope - trend_base_slope
+
+                    # Applica differenza di trend proporzionalmente
+                    value += trend_diff * i * 0.5  # Peso ridotto per non esagerare
 
             forecast_vals.append(max(0, value))
 
