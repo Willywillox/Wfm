@@ -3706,6 +3706,7 @@ class ForecastGUI:
 
         # Nuovo ordine tab con nuove funzionalità
         tab_dashboard = ttk.Frame(notebook)
+        tab_model_selector = ttk.Frame(notebook)  # NUOVO TAB
         tab_alert = ttk.Frame(notebook)
         tab_plots_interactive = ttk.Frame(notebook)
         tab_plots = ttk.Frame(notebook)
@@ -3716,6 +3717,7 @@ class ForecastGUI:
         tab_guide = ttk.Frame(notebook)
 
         notebook.add(tab_dashboard, text="📊 Dashboard KPI")
+        notebook.add(tab_model_selector, text="🎯 Quale Modello Usare?")  # NUOVO TAB
         notebook.add(tab_alert, text="⚠️ Alert")
         notebook.add(tab_plots_interactive, text="📈 Grafici Interattivi")
         notebook.add(tab_plots, text="🖼️ Grafici PNG")
@@ -3738,6 +3740,175 @@ class ForecastGUI:
         self.kpi_widgets['affidabilita'] = self._create_kpi_card(kpi_frame, "Affidabilità (MAPE)", "N/D", "#6A994E", 1, 0)
         self.kpi_widgets['trend'] = self._create_kpi_card(kpi_frame, "Trend", "N/D", "#8B5CF6", 1, 1)
         self.kpi_widgets['modello'] = self._create_kpi_card(kpi_frame, "Miglior Modello", "N/D", "#C73E1D", 1, 2)
+
+        # ========== TAB QUALE MODELLO USARE ==========
+        ttk.Label(tab_model_selector, text="🎯 Quale Modello di Forecast Usare?",
+                 font=("Helvetica", 16, "bold")).pack(pady=10)
+
+        # Container principale con scrollbar
+        selector_canvas = tk.Canvas(tab_model_selector)
+        selector_scrollbar = ttk.Scrollbar(tab_model_selector, orient="vertical", command=selector_canvas.yview)
+        selector_scrollable = ttk.Frame(selector_canvas)
+
+        selector_scrollable.bind(
+            "<Configure>",
+            lambda e: selector_canvas.configure(scrollregion=selector_canvas.bbox("all"))
+        )
+
+        selector_canvas.create_window((0, 0), window=selector_scrollable, anchor="nw")
+        selector_canvas.configure(yscrollcommand=selector_scrollbar.set)
+
+        selector_canvas.pack(side="left", fill="both", expand=True)
+        selector_scrollbar.pack(side="right", fill="y")
+
+        # SEZIONE 1: RACCOMANDAZIONE AUTOMATICA
+        raccomandazione_frame = ttk.LabelFrame(selector_scrollable, text="✅ RACCOMANDAZIONE AUTOMATICA", padding=15)
+        raccomandazione_frame.pack(fill="x", padx=10, pady=10)
+
+        self.recommendation_text = tk.Text(raccomandazione_frame, height=8, width=100, wrap="word",
+                                          font=("Courier", 10), bg="#E8F5E9", relief="solid", borderwidth=1)
+        self.recommendation_text.pack(fill="both", expand=True)
+        self.recommendation_text.insert("1.0", "⏳ Esegui un forecast per vedere la raccomandazione automatica...")
+        self.recommendation_text.config(state="disabled")
+
+        # SEZIONE 2: TABELLA COMPARATIVA SEMPLIFICATA
+        comparativa_frame = ttk.LabelFrame(selector_scrollable, text="📊 COMPARAZIONE RAPIDA MODELLI", padding=15)
+        comparativa_frame.pack(fill="x", padx=10, pady=10)
+
+        # Crea Treeview per tabella
+        columns = ("Modello", "Rating", "Velocità", "Accuratezza", "Quando Usarlo")
+        self.model_comparison_tree = ttk.Treeview(comparativa_frame, columns=columns, show="headings", height=8)
+
+        self.model_comparison_tree.heading("Modello", text="Modello")
+        self.model_comparison_tree.heading("Rating", text="Rating")
+        self.model_comparison_tree.heading("Velocità", text="Velocità")
+        self.model_comparison_tree.heading("Accuratezza", text="Accuratezza")
+        self.model_comparison_tree.heading("Quando Usarlo", text="Quando Usarlo")
+
+        self.model_comparison_tree.column("Modello", width=120)
+        self.model_comparison_tree.column("Rating", width=80)
+        self.model_comparison_tree.column("Velocità", width=100)
+        self.model_comparison_tree.column("Accuratezza", width=100)
+        self.model_comparison_tree.column("Quando Usarlo", width=350)
+
+        self.model_comparison_tree.pack(fill="both", expand=True)
+
+        # Scrollbar per treeview
+        comp_scrollbar = ttk.Scrollbar(comparativa_frame, orient="vertical", command=self.model_comparison_tree.yview)
+        self.model_comparison_tree.configure(yscrollcommand=comp_scrollbar.set)
+        comp_scrollbar.pack(side="right", fill="y")
+
+        # SEZIONE 3: CASI D'USO PRATICI
+        casiduso_frame = ttk.LabelFrame(selector_scrollable, text="💡 GUIDA PRATICA - Quando Usare Ogni Modello", padding=15)
+        casiduso_frame.pack(fill="x", padx=10, pady=10)
+
+        casiduso_text = tk.Text(casiduso_frame, height=20, width=100, wrap="word",
+                               font=("Courier", 9), relief="solid", borderwidth=1)
+        casiduso_text.pack(fill="both", expand=True)
+
+        guida_pratica = """
+🏆 PROPHET - Il Più Completo
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ USA QUANDO:
+   • Hai dati con TREND marcato (crescita o decrescita)
+   • Ci sono FESTIVITÀ che impattano il volume (Natale, Ferragosto, ecc.)
+   • Vuoi la MASSIMA PRECISIONE possibile
+   • Il tempo di calcolo non è un problema (3-5 minuti)
+
+❌ NON USARE QUANDO:
+   • Hai pochi dati storici (< 3 mesi)
+   • Serve velocità immediata
+
+📊 CARATTERISTICHE:
+   • Gestisce automaticamente festività italiane
+   • Cattura trend crescenti/decrescenti
+   • Include effetti weekend
+   • Ottimo per pianificazione strategica
+
+
+⚡ HOLT-WINTERS - Il Più Veloce e Affidabile
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ USA QUANDO:
+   • Serve VELOCITÀ (pochi secondi)
+   • Dati con pattern settimanale regolare
+   • Vuoi un buon compromesso velocità/accuratezza
+   • Forecast giornaliero o settimanale
+
+❌ NON USARE QUANDO:
+   • Ci sono festività importanti da gestire
+   • Il trend cambia frequentemente
+
+📊 CARATTERISTICHE:
+   • Velocissimo (< 10 secondi)
+   • Buona accuratezza su dati stabili
+   • Ideale per forecast rapidi quotidiani
+   • Cattura stagionalità settimanale
+
+
+🔮 TBATS - Il Più Sofisticato
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ USA QUANDO:
+   • Hai MULTIPLE STAGIONALITÀ (settimanale + mensile)
+   • Dati complessi con pattern sovrapposti
+   • Vuoi esplorare pattern nascosti
+   • Il tempo non è un limite (5-10 minuti)
+
+❌ NON USARE QUANDO:
+   • Hai fretta (molto lento)
+   • Dati semplici con pattern regolari
+
+📊 CARATTERISTICHE:
+   • Cattura stagionalità multiple automaticamente
+   • Ottimo per analisi approfondite
+   • Robusto a outlier
+   • Richiede più dati storici (almeno 6 mesi)
+
+
+📈 PATTERN - La Baseline Semplice
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ USA QUANDO:
+   • Vuoi un forecast "di sicurezza" semplice
+   • Come BASELINE per confronto
+   • Dati molto stabili senza cambiamenti
+
+❌ NON USARE QUANDO:
+   • Ci sono trend o cambiamenti
+   • Serve precisione elevata
+
+📊 CARATTERISTICHE:
+   • Replica la media storica per giorno settimana
+   • Velocissimo
+   • Utile come confronto, non come previsione principale
+
+
+🎯 INTRADAY DINAMICO - Per Distribuzione Oraria
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ USA QUANDO:
+   • Serve DISTRIBUZIONE PER FASCIA ORARIA (staffing)
+   • Pianificazione turni operatori
+   • Hai dati intraday dettagliati
+
+❌ NON USARE QUANDO:
+   • Ti serve solo volume giornaliero totale
+   • Non hai dati per fascia oraria
+
+📊 CARATTERISTICHE:
+   • 24 modelli separati (uno per ogni ora)
+   • Ideale per workforce management
+   • Include pattern giorno settimana per fascia
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 CONSIGLIO GENERALE:
+   1. Usa PROPHET per pianificazione strategica (mensile/trimestrale)
+   2. Usa HOLT-WINTERS per forecast operativo quotidiano (veloce)
+   3. Usa INTRADAY DINAMICO per pianificazione turni
+   4. Confronta sempre almeno 2-3 modelli per validazione
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+
+        casiduso_text.insert("1.0", guida_pratica)
+        casiduso_text.config(state="disabled")
 
         # ========== TAB ALERT ==========
         ttk.Label(tab_alert, text="Alert e Avvisi Automatici", font=("Helvetica", 14, "bold")).pack(pady=10)
@@ -4145,43 +4316,8 @@ class ForecastGUI:
             best_from_metrics = self._best_model_name()
             self.best_model_var.set(best_from_metrics or "N/D")
 
-        # --- NEW: Update Recommendation Text logic ---
-        self.txt_recommendation.configure(state="normal")
-        self.txt_recommendation.delete("1.0", tk.END)
-        
-        rec_text = "Nessuna raccomandazione disponibile."
-        
-        if self.backtest_metrics:
-            reliability = self._reliability_map()
-            if reliability:
-                best_overall = min(reliability, key=reliability.get)
-                best_mape = reliability[best_overall]
-                
-                # Logica semplice per raccomandazione
-                rec_text = f"Il modello '{best_overall.upper()}' è il più affidabile con un errore medio del {best_mape:.1f}%.\n"
-                
-                if best_mape < 5:
-                    rec_text += "✅ Affidabilità ECCELLENTE: Puoi usare questo forecast per pianificazione dettagliata."
-                elif best_mape < 10:
-                    rec_text += "⚠️ Affidabilità BUONA: Monitora i picchi, ma il trend è solido."
-                else:
-                    rec_text += "🔴 Affidabilità BASSA: Usa questo forecast con cautela, considera margine di sicurezza."
-                
-                # Check differenza orizzonti (se disponibile)
-                by_h = self.backtest_metrics.get(best_overall, {}).get('by_horizon', {})
-                if by_h:
-                    short_term = by_h.get('7 gg', {}).get('MAPE')
-                    long_term = by_h.get('60 gg', {}).get('MAPE')
-                    if short_term and long_term and (long_term > short_term * 1.5):
-                         rec_text += "\n💡 Nota: L'errore aumenta sul lungo periodo. Aggiorna il forecast ogni settimana."
-            else:
-                rec_text = "Metriche di backtest non valide."
-        else:
-            rec_text = "Esegui un forecast per vedere le raccomandazioni."
-
-        self.txt_recommendation.insert(tk.END, rec_text)
-        self.txt_recommendation.configure(state="disabled")
-        # ---------------------------------------------
+        # Aggiorna tab "Quale Modello Usare?"
+        self._refresh_model_selector(risultati)
 
         # Aggiorna Dashboard KPI
         self._refresh_dashboard_kpi(risultati)
@@ -4652,6 +4788,126 @@ class ForecastGUI:
                                   values=("✅", "INFO", "Nessun Alert",
                                          "Nessuna condizione di attenzione rilevata"),
                                   tags=('bassa',))
+
+    def _refresh_model_selector(self, risultati):
+        """Aggiorna il tab 'Quale Modello Usare?' con raccomandazione e tabella comparativa."""
+        # 1. AGGIORNA RACCOMANDAZIONE AUTOMATICA
+        self.recommendation_text.configure(state="normal")
+        self.recommendation_text.delete("1.0", tk.END)
+
+        if not self.backtest_metrics:
+            self.recommendation_text.insert("1.0", "⏳ Esegui un forecast per vedere la raccomandazione automatica...")
+            self.recommendation_text.configure(state="disabled")
+            return
+
+        # Trova modello migliore
+        valid_models = {m: v.get('MAPE') for m, v in self.backtest_metrics.items()
+                       if v.get('MAPE') is not None and np.isfinite(v.get('MAPE'))}
+
+        if not valid_models:
+            self.recommendation_text.insert("1.0", "❌ Nessun modello valido trovato nel backtest.")
+            self.recommendation_text.configure(state="disabled")
+            return
+
+        best_model = min(valid_models, key=valid_models.get)
+        best_mape = valid_models[best_model]
+
+        # Costruisci raccomandazione dettagliata
+        rec_lines = []
+        rec_lines.append("🏆 MODELLO RACCOMANDATO\n")
+        rec_lines.append("=" * 80 + "\n\n")
+        rec_lines.append(f"🎯 USA: {best_model.upper()}\n\n")
+
+        # Affidabilità
+        if best_mape < 5:
+            rating = "★★★★★ ECCELLENTE"
+            advice = "Questo forecast è MOLTO affidabile. Puoi usarlo per pianificazione dettagliata."
+        elif best_mape < 10:
+            rating = "★★★★☆ BUONO"
+            advice = "Buona affidabilità. Monitora i picchi, ma il trend generale è solido."
+        elif best_mape < 15:
+            rating = "★★★☆☆ DISCRETO"
+            advice = "Affidabilità moderata. Usa con margine di sicurezza del 10-15%."
+        else:
+            rating = "★★☆☆☆ BASSO"
+            advice = "Affidabilità limitata. Considera come stima indicativa, non previsione precisa."
+
+        rec_lines.append(f"📊 Affidabilità: {rating}\n")
+        rec_lines.append(f"   Errore medio (MAPE): {best_mape:.1f}%\n\n")
+        rec_lines.append(f"💡 Consiglio: {advice}\n\n")
+
+        # Alternative
+        sorted_models = sorted(valid_models.items(), key=lambda x: x[1])
+        if len(sorted_models) > 1:
+            rec_lines.append("📋 ALTERNATIVE:\n")
+            for model, mape in sorted_models[1:4]:  # Top 3 alternative
+                stars = "★" * max(1, int(5 - mape/5))
+                rec_lines.append(f"   {stars:5s} {model.upper():15s} - MAPE {mape:.1f}%\n")
+
+        rec_text = "".join(rec_lines)
+        self.recommendation_text.insert("1.0", rec_text)
+        self.recommendation_text.configure(state="disabled")
+
+        # 2. AGGIORNA TABELLA COMPARATIVA
+        # Pulisci tabella
+        for item in self.model_comparison_tree.get_children():
+            self.model_comparison_tree.delete(item)
+
+        # Definizione caratteristiche modelli (info statiche)
+        model_info = {
+            'holtwinters': {
+                'velocita': '⚡⚡⚡ Veloce',
+                'quando': 'Pattern settimanale regolare, forecast rapido quotidiano'
+            },
+            'prophet': {
+                'velocita': '⚡⚡☆ Medio',
+                'quando': 'Trend marcato, festività importanti, massima precisione'
+            },
+            'tbats': {
+                'velocita': '⚡☆☆ Lento',
+                'quando': 'Multiple stagionalità, dati complessi, analisi approfondite'
+            },
+            'sarima': {
+                'velocita': '⚡⚡☆ Medio',
+                'quando': 'Correlazione autoregressiva, dati stabili e lunghi'
+            },
+            'pattern': {
+                'velocita': '⚡⚡⚡ Veloce',
+                'quando': 'Baseline semplice, confronto, dati molto stabili'
+            },
+            'naive': {
+                'velocita': '⚡⚡⚡ Veloce',
+                'quando': 'Controllo baseline, forecast sicurezza'
+            },
+            'intraday_dinamico': {
+                'velocita': '⚡⚡☆ Medio',
+                'quando': 'Distribuzione oraria, pianificazione turni, staffing'
+            }
+        }
+
+        # Popola tabella con modelli effettivamente eseguiti
+        for model, mape in sorted_models:
+            # Rating basato su MAPE
+            if mape < 5:
+                rating = "★★★★★"
+                accuratezza = "Eccellente"
+            elif mape < 10:
+                rating = "★★★★☆"
+                accuratezza = "Buono"
+            elif mape < 15:
+                rating = "★★★☆☆"
+                accuratezza = "Discreto"
+            elif mape < 25:
+                rating = "★★☆☆☆"
+                accuratezza = "Sufficiente"
+            else:
+                rating = "★☆☆☆☆"
+                accuratezza = "Basso"
+
+            info = model_info.get(model, {'velocita': 'N/D', 'quando': 'N/D'})
+
+            self.model_comparison_tree.insert('', 'end',
+                values=(model.upper(), rating, info['velocita'], accuratezza, info['quando']))
 
     def run(self):
         self.root.mainloop()
