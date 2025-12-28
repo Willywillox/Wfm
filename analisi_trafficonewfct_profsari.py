@@ -2371,8 +2371,375 @@ def _calcola_ensemble_pesato(confronto_df, modelli, backtest_metrics):
     for m in valid_models:
         norm_weight = weights[m] / total_weight
         weighted_sum += confronto_df[m] * norm_weight
-        
+
     return weighted_sum
+
+
+# ============================================================================
+# ENSEMBLE HYBRID: Combina le migliori componenti di ogni modello
+# ============================================================================
+
+def _estrai_componenti_modello(df, forecast_df, nome_modello):
+    """
+    Estrae componenti decomposte da un forecast esistente.
+
+    Returns:
+        dict con chiavi: 'trend', 'weekly', 'monthly', 'residual'
+    """
+    if forecast_df is None or 'FORECAST' not in forecast_df.columns:
+        return None
+
+    try:
+        forecast_vals = forecast_df['FORECAST'].values
+        dates = pd.to_datetime(forecast_df['DATA'])
+
+        # Trend: regressione lineare semplice
+        x = np.arange(len(forecast_vals))
+        if len(x) > 1:
+            coeffs = np.polyfit(x, forecast_vals, deg=1)
+            trend = np.polyval(coeffs, x)
+        else:
+            trend = forecast_vals.copy()
+
+        detrended = forecast_vals - trend
+
+        # Pattern settimanale: media per giorno settimana
+        weekly_pattern = np.zeros(7)
+        for dow in range(7):
+            mask = dates.dt.dayofweek == dow
+            if mask.sum() > 0:
+                weekly_pattern[dow] = detrended[mask].mean()
+
+        # Normalizza pattern settimanale (media 1.0)
+        if weekly_pattern.sum() > 0:
+            weekly_pattern = weekly_pattern / weekly_pattern.mean()
+        else:
+            weekly_pattern = np.ones(7)
+
+        # Pattern mensile: media per giorno del mese (1-31)
+        monthly_pattern = np.zeros(31)
+        for day in range(1, 32):
+            mask = dates.dt.day == day
+            if mask.sum() > 0:
+                monthly_pattern[day-1] = detrended[mask].mean()
+
+        # Normalizza pattern mensile
+        if monthly_pattern.sum() > 0:
+            monthly_pattern = monthly_pattern / monthly_pattern.mean()
+        else:
+            monthly_pattern = np.ones(31)
+
+        # Residui
+        weekly_component = np.array([weekly_pattern[d.dayofweek] for d in dates])
+        monthly_component = np.array([monthly_pattern[d.day - 1] for d in dates])
+        residual = forecast_vals - trend - detrended * (weekly_component + monthly_component - 2)
+
+        return {
+            'trend': trend,
+            'weekly_pattern': weekly_pattern,
+            'monthly_pattern': monthly_pattern,
+            'residual': residual,
+            'forecast_vals': forecast_vals
+        }
+    except Exception as exc:
+        return None
+
+
+def _score_componente_settimanale(df, componente):
+    """Valuta la qualità del pattern settimanale."""
+    if componente is None or 'weekly_pattern' not in componente:
+        return float('inf')
+
+    # Estrai pattern settimanale storico
+    daily = df.groupby('DATA')['OFFERTO'].sum().reset_index()
+    daily['DOW'] = pd.to_datetime(daily['DATA']).dt.dayofweek
+
+    historical_weekly = np.zeros(7)
+    for dow in range(7):
+        mask = daily['DOW'] == dow
+        if mask.sum() > 0:
+            historical_weekly[dow] = daily.loc[mask, 'OFFERTO'].mean()
+
+    if historical_weekly.sum() > 0:
+        historical_weekly = historical_weekly / historical_weekly.mean()
+
+    # Calcola differenza con pattern del modello
+    diff = np.abs(componente['weekly_pattern'] - historical_weekly)
+    return diff.mean()
+
+
+def _score_componente_mensile(df, componente):
+    """Valuta la qualità del pattern mensile."""
+    if componente is None or 'monthly_pattern' not in componente:
+        return float('inf')
+
+    # Estrai pattern mensile storico
+    daily = df.groupby('DATA')['OFFERTO'].sum().reset_index()
+    daily['DOM'] = pd.to_datetime(daily['DATA']).dt.day
+
+    historical_monthly = np.zeros(31)
+    for day in range(1, 32):
+        mask = daily['DOM'] == day
+        if mask.sum() > 0:
+            historical_monthly[day-1] = daily.loc[mask, 'OFFERTO'].mean()
+
+    if historical_monthly.sum() > 0:
+        historical_monthly = historical_monthly / historical_monthly.mean()
+
+    # Calcola differenza
+    diff = np.abs(componente['monthly_pattern'] - historical_monthly)
+    return diff.mean()
+
+
+def _score_componente_trend(df, componente):
+    """Valuta la qualità del trend."""
+    if componente is None or 'trend' not in componente:
+        return float('inf')
+
+    # Trend storico semplice
+    daily = df.groupby('DATA')['OFFERTO'].sum().reset_index()
+    daily = daily.sort_values('DATA')
+
+    if len(daily) < 2:
+        return float('inf')
+
+    x = np.arange(len(daily))
+    y = daily['OFFERTO'].values
+    coeffs = np.polyfit(x, y, deg=1)
+    historical_trend = coeffs[0]  # Slope
+
+    # Trend del modello
+    model_trend = (componente['trend'][-1] - componente['trend'][0]) / max(len(componente['trend']) - 1, 1)
+
+    # Differenza relativa
+    if abs(historical_trend) > 0.1:
+        return abs((model_trend - historical_trend) / historical_trend)
+    else:
+        return abs(model_trend - historical_trend)
+
+
+def _score_volume_totale(df, forecast_df):
+    """Valuta l'accuratezza del volume totale previsto."""
+    if forecast_df is None or 'FORECAST' not in forecast_df.columns:
+        return float('inf')
+
+    # Media giornaliera storica
+    daily = df.groupby('DATA')['OFFERTO'].sum()
+    historical_mean = daily.mean()
+
+    # Media forecast
+    forecast_mean = forecast_df['FORECAST'].mean()
+
+    if historical_mean > 0:
+        return abs((forecast_mean - historical_mean) / historical_mean)
+    else:
+        return abs(forecast_mean - historical_mean)
+
+
+def _forecast_ensemble_hybrid(df, tutti_forecast, backtest_metrics, giorni_forecast=28, produce_outputs=False):
+    """
+    Ensemble ibrido che combina le migliori componenti di ogni modello.
+
+    Seleziona:
+    - Pattern settimanale dal modello migliore
+    - Pattern mensile dal modello migliore
+    - Trend dal modello migliore
+    - Volume totale dal modello migliore
+    - Distribuzione intraday dal modello intraday_dinamico
+
+    Args:
+        df: DataFrame storico
+        tutti_forecast: dict {nome_modello: forecast_result}
+        backtest_metrics: dict con metriche di backtest
+        giorni_forecast: numero giorni da prevedere
+        produce_outputs: se True stampa dettagli
+
+    Returns:
+        dict con 'giornaliero' e 'per_fascia'
+    """
+    if not tutti_forecast or len(tutti_forecast) < 2:
+        if produce_outputs:
+            print("   ⚠️ Ensemble hybrid richiede almeno 2 modelli base")
+        return None
+
+    try:
+        if produce_outputs:
+            print("   🎯 Ensemble Hybrid: analisi componenti...")
+
+        # Estrai componenti da ogni modello
+        componenti = {}
+        for nome_modello, forecast_result in tutti_forecast.items():
+            if forecast_result is None:
+                continue
+
+            # Estrai DataFrame giornaliero
+            if isinstance(forecast_result, dict) and 'giornaliero' in forecast_result:
+                forecast_df = forecast_result['giornaliero']
+            else:
+                forecast_df = forecast_result
+
+            comp = _estrai_componenti_modello(df, forecast_df, nome_modello)
+            if comp is not None:
+                componenti[nome_modello] = comp
+
+        if len(componenti) < 2:
+            if produce_outputs:
+                print("   ⚠️ Ensemble hybrid: componenti insufficienti")
+            return None
+
+        # Valuta ogni componente
+        scores_weekly = {}
+        scores_monthly = {}
+        scores_trend = {}
+        scores_volume = {}
+
+        for nome_modello, comp in componenti.items():
+            scores_weekly[nome_modello] = _score_componente_settimanale(df, comp)
+            scores_monthly[nome_modello] = _score_componente_mensile(df, comp)
+            scores_trend[nome_modello] = _score_componente_trend(df, comp)
+
+            # Volume: usa MAPE dal backtest se disponibile
+            if backtest_metrics and nome_modello in backtest_metrics:
+                mape = backtest_metrics[nome_modello].get('MAPE', float('inf'))
+                scores_volume[nome_modello] = mape if np.isfinite(mape) else float('inf')
+            else:
+                forecast_df = tutti_forecast[nome_modello]
+                if isinstance(forecast_df, dict):
+                    forecast_df = forecast_df.get('giornaliero')
+                scores_volume[nome_modello] = _score_volume_totale(df, forecast_df)
+
+        # Seleziona migliori per ogni componente
+        best_weekly = min(scores_weekly, key=scores_weekly.get) if scores_weekly else None
+        best_monthly = min(scores_monthly, key=scores_monthly.get) if scores_monthly else None
+        best_trend = min(scores_trend, key=scores_trend.get) if scores_trend else None
+        best_volume = min(scores_volume, key=scores_volume.get) if scores_volume else None
+
+        if produce_outputs:
+            print(f"   📊 Migliori componenti:")
+            print(f"      Pattern settimanale: {best_weekly} (score: {scores_weekly.get(best_weekly, 'N/A'):.3f})")
+            print(f"      Pattern mensile: {best_monthly} (score: {scores_monthly.get(best_monthly, 'N/A'):.3f})")
+            print(f"      Trend: {best_trend} (score: {scores_trend.get(best_trend, 'N/A'):.3f})")
+            print(f"      Volume totale: {best_volume} (score: {scores_volume.get(best_volume, 'N/A'):.3f})")
+
+        # Costruisci forecast combinato
+        last_date = df['DATA'].max()
+        future_dates = pd.date_range(start=last_date + timedelta(days=1), periods=giorni_forecast, freq='D')
+
+        # Base: volume medio storico
+        daily_hist = df.groupby('DATA')['OFFERTO'].sum()
+        base_volume = daily_hist.mean()
+
+        # Applica correzione volume dal modello migliore
+        if best_volume and best_volume in componenti:
+            volume_factor = componenti[best_volume]['forecast_vals'].mean() / max(base_volume, 1)
+        else:
+            volume_factor = 1.0
+
+        # Costruisci forecast finale
+        forecast_vals = []
+        for i, date in enumerate(future_dates):
+            dow = date.dayofweek
+            dom = date.day - 1  # 0-indexed
+
+            # Base
+            value = base_volume * volume_factor
+
+            # Applica pattern settimanale
+            if best_weekly and best_weekly in componenti:
+                weekly_factor = componenti[best_weekly]['weekly_pattern'][dow]
+                value *= weekly_factor
+
+            # Applica pattern mensile (additivo, non moltiplicativo)
+            if best_monthly and best_monthly in componenti:
+                monthly_adjustment = componenti[best_monthly]['monthly_pattern'][dom]
+                value *= monthly_adjustment
+
+            # Applica trend
+            if best_trend and best_trend in componenti:
+                trend_component = componenti[best_trend]['trend']
+                if len(trend_component) > 0:
+                    # Estendi trend linearmente
+                    trend_slope = (trend_component[-1] - trend_component[0]) / max(len(trend_component) - 1, 1)
+                    trend_adjustment = trend_slope * i
+                    value += trend_adjustment
+
+            forecast_vals.append(max(0, value))
+
+        # Crea DataFrame forecast giornaliero
+        forecast_daily_df = pd.DataFrame({
+            'DATA': future_dates,
+            'FORECAST': forecast_vals,
+            'GG_SETT': [['lun','mar','mer','gio','ven','sab','dom'][d.weekday()] for d in future_dates]
+        })
+
+        # Calcola intervalli di confidenza (combinazione dei modelli)
+        residuals_combined = []
+        for nome_modello, comp in componenti.items():
+            if 'residual' in comp:
+                residuals_combined.extend(comp['residual'])
+
+        if residuals_combined:
+            lower, upper = _stima_intervallo_confidenza(
+                np.array(residuals_combined),
+                forecast_vals,
+                fallback_ratio=0.20
+            )
+            forecast_daily_df['CI_LOWER'] = lower
+            forecast_daily_df['CI_UPPER'] = upper
+
+        # Distribuzione intraday: usa intraday_dinamico se disponibile, altrimenti pattern storico
+        if 'intraday_dinamico' in tutti_forecast and tutti_forecast['intraday_dinamico'] is not None:
+            intraday_result = tutti_forecast['intraday_dinamico']
+            if isinstance(intraday_result, dict) and 'per_fascia' in intraday_result:
+                # Usa distribuzione intraday dal modello specializzato
+                pattern_intraday = {}
+                fascia_df = intraday_result['per_fascia']
+
+                for _, row in fascia_df.iterrows():
+                    key = (row['GG_SETT'], row['FASCIA'])
+                    if key not in pattern_intraday:
+                        pattern_intraday[key] = []
+                    pattern_intraday[key].append(row['FORECAST'])
+
+                # Media per chiave
+                for key in pattern_intraday:
+                    pattern_intraday[key] = np.mean(pattern_intraday[key])
+
+                forecast_fascia_df = _distribuisci_forecast_per_fascia(pattern_intraday, forecast_daily_df)
+            else:
+                pattern_intraday = _costruisci_pattern_intraday(df)
+                forecast_fascia_df = _distribuisci_forecast_per_fascia(pattern_intraday, forecast_daily_df)
+        else:
+            pattern_intraday = _costruisci_pattern_intraday(df)
+            forecast_fascia_df = _distribuisci_forecast_per_fascia(pattern_intraday, forecast_daily_df)
+
+        if produce_outputs:
+            print(f"   ✅ Ensemble Hybrid completato: {len(forecast_daily_df)} giorni previsti")
+
+        return {
+            'giornaliero': forecast_daily_df,
+            'per_fascia': forecast_fascia_df,
+            'metadata': {
+                'best_weekly': best_weekly,
+                'best_monthly': best_monthly,
+                'best_trend': best_trend,
+                'best_volume': best_volume,
+                'scores': {
+                    'weekly': scores_weekly,
+                    'monthly': scores_monthly,
+                    'trend': scores_trend,
+                    'volume': scores_volume
+                }
+            }
+        }
+
+    except Exception as exc:
+        if produce_outputs:
+            print(f"   ❌ Ensemble hybrid fallito: {exc}")
+        import traceback
+        if produce_outputs:
+            traceback.print_exc()
+        return None
 
 
 def _correggi_forecast_con_storico(forecast_df, df_storico, soglia_minima=5):
@@ -2563,6 +2930,58 @@ def genera_forecast_modelli(df, output_dir, giorni_forecast=28, metodi=None, esc
     if backtest_metrics:
         risultati['backtest'] = backtest_metrics
 
+    # ✨ NUOVO: Ensemble Hybrid - combina le migliori componenti di ogni modello
+    if 'ensemble_hybrid' in metodi or 'hybrid' in metodi:
+        print("\n   🎯 Calcolo Ensemble Hybrid (migliori componenti)...")
+        try:
+            hybrid_result = _forecast_ensemble_hybrid(
+                df,
+                risultati,
+                backtest_metrics,
+                giorni_forecast,
+                produce_outputs=True
+            )
+            if hybrid_result is not None:
+                risultati['ensemble_hybrid'] = hybrid_result
+
+                # Aggiungi al confronto
+                if confronto is not None and 'giornaliero' in hybrid_result:
+                    hybrid_daily = hybrid_result['giornaliero'][['DATA', 'FORECAST']].copy()
+                    hybrid_daily.rename(columns={'FORECAST': 'ensemble_hybrid'}, inplace=True)
+                    confronto = confronto.merge(hybrid_daily, on='DATA', how='outer')
+                    confronto = confronto.sort_values('DATA')
+
+                # Salva file
+                actual_path = _salva_forecast_excel(output_dir, 'forecast_ensemble_hybrid.xlsx', hybrid_result)
+                print(f"   ✅ Forecast Ensemble Hybrid salvato: {actual_path.name}")
+
+                # Aggiungi metadata al riepilogo
+                if 'metadata' in hybrid_result:
+                    meta = hybrid_result['metadata']
+                    detail = f"Best: weekly={meta.get('best_weekly', 'N/A')}, monthly={meta.get('best_monthly', 'N/A')}, trend={meta.get('best_trend', 'N/A')}, volume={meta.get('best_volume', 'N/A')}"
+                else:
+                    detail = "Completato"
+
+                stati_modelli.append({
+                    'metodo': 'ensemble_hybrid',
+                    'successo': True,
+                    'dettaglio': detail
+                })
+            else:
+                print(f"   ⚠️ Ensemble Hybrid non generato (richiede almeno 2 modelli base)")
+                stati_modelli.append({
+                    'metodo': 'ensemble_hybrid',
+                    'successo': False,
+                    'dettaglio': "Richiede almeno 2 modelli base"
+                })
+        except Exception as exc:
+            print(f"   ❌ Errore Ensemble Hybrid: {exc}")
+            stati_modelli.append({
+                'metodo': 'ensemble_hybrid',
+                'successo': False,
+                'dettaglio': f"Errore: {exc}"
+            })
+
     ensemble_models = []
     if confronto is not None:
         available_models = [col for col in confronto.columns if col != 'DATA']
@@ -2612,7 +3031,9 @@ def _genera_grafico_confronto_modelli(confronto_df, output_dir):
         'sarima': '#C73E1D',
         'pattern': '#6A994E',
         'naive': '#BC4B51',
-        'intraday_dinamico': '#8B5CF6'
+        'intraday_dinamico': '#8B5CF6',
+        'ensemble_hybrid': '#FF6B6B',
+        'ensemble_top2': '#4ECDC4'
     }
 
     for metodo in metodi_cols:
@@ -3595,7 +4016,7 @@ class ForecastGUI:
         self.fast_mode_var = tk.BooleanVar(value=FAST_MODE)
 
         self.model_vars = {m: tk.BooleanVar(value=True) for m in (
-            'holtwinters', 'pattern', 'naive', 'sarima', 'prophet', 'tbats', 'intraday_dinamico'
+            'holtwinters', 'pattern', 'naive', 'sarima', 'prophet', 'tbats', 'intraday_dinamico', 'ensemble_hybrid'
         )}
         self.holiday_flags_vars = {h: tk.BooleanVar(value=False) for h in HOLIDAY_FLAGS}
         self.confronto_df = None
