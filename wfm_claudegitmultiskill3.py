@@ -651,16 +651,23 @@ def genera_turni_candidati(req_pre: pd.DataFrame, durations_set_min: set, grid_s
     """
     min_start = int(req_pre['start_min'].min())
     max_end = int(req_pre['end_min'].max())
+    step = int(grid_step_min) if grid_step_min and grid_step_min > 0 else 15
+    if step <= 0:
+        step = 15
     rows = []
     
     for dmin in sorted(durations_set_min):
         start = min_start
+        # Allinea l'inizio al primo passo di griglia >= min_start
+        rem = start % step
+        if rem != 0:
+            start += (step - rem)
         while start + dmin <= max_end:
             # Se force_phase_minutes ÃƒÂ¨ specificato, genera solo turni con quei minuti
             if force_phase_minutes is not None:
                 start_minute = (start % 60)
                 if start_minute not in force_phase_minutes:
-                    start += grid_step_min
+                    start += step
                     continue
             
             end = start + dmin
@@ -672,9 +679,11 @@ def genera_turni_candidati(req_pre: pd.DataFrame, durations_set_min: set, grid_s
                 'end_min': end,
                 'durata_min': int(dmin),
             })
-            start += grid_step_min
+            start += step
     
-    return pd.DataFrame(rows)
+    if rows:
+        return pd.DataFrame(rows)
+    return pd.DataFrame(columns=['id turno', 'entrata_str', 'uscita_str', 'start_min', 'end_min', 'durata_min'])
 
 
 def determina_turni_ammissibili(
@@ -3455,6 +3464,10 @@ def process_single_skill_group(req, turni, ris, cfg, args, skill_label):
             )
         except ValueError as exc:
             raise SystemExit(str(exc))
+    if turni_cand.empty:
+        raise SystemExit(
+            "Nessun turno candidato generato: verifica griglia e minuti preferiti (es. 0,30) rispetto alle fasce."
+        )
     
     shift_by_emp, shift_out_of_range, avail_ini_min, avail_end_min = determina_turni_ammissibili(
         ris,
