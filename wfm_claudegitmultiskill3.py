@@ -59,19 +59,19 @@ def _find_col(df: pd.DataFrame, name: str):
 
 def _parse_hours_cell(val) -> float:
     if pd.isna(val):
-        return 4.0
+        return 0.0
     if isinstance(val, (int, float)):
-        return float(val) if float(val) > 0 else 4.0
+        return float(val) if float(val) > 0 else 0.0
     s = str(val).strip().lower()
     m = re.search(r'(\d+[.,]?\d*)', s)
     if not m:
-        return 4.0
+        return 0.0
     num = m.group(1).replace(',', '.')
     try:
         v = float(num)
-        return v if v > 0 else 4.0
+        return v if v > 0 else 0.0
     except Exception:
-        return 4.0
+        return 0.0
 
 
 def _parse_rest_count_cell(val) -> int:
@@ -538,9 +538,9 @@ def prepara_req(req: pd.DataFrame) -> pd.DataFrame:
 def infer_personal_params_from_risorse(ris: pd.DataFrame):
     """
     Estrae i parametri personali dal foglio "Risorse", incluse le combinazioni
-    settimanali di ore/giorno (colonna Q) e il numero di giorni consentiti fuori
-    fascia (colonna R), trasformandoli in vincoli utilizzabili durante la
-    generazione dei turni.
+    di ore/giorno (colonna Q), le ore settimanali (colonna C) e il numero di
+    giorni consentiti fuori fascia (colonna R), trasformandoli in vincoli
+    utilizzabili durante la generazione dei turni.
 
     Restituisce durate base, riposi target, straordinari disponibili, flag di
     spezzamento OT, straordinari per giorno, pattern di durata e budget
@@ -583,18 +583,35 @@ def infer_personal_params_from_risorse(ris: pd.DataFrame):
     ot_daily_minutes_by_emp = {}
     duration_patterns_by_emp: Dict[str, list[int]] = {}
     out_of_range_allowance_by_emp: Dict[str, int] = {}
+    weekly_mismatch = []
 
     for _, row in ris.iterrows():
         emp = row['id dipendente']
-        ore = _parse_hours_cell(row[hours_col])
-        base_duration = int(round(ore * 60))
+        weekly_hours = _parse_hours_cell(row[hours_col])
+        target_rest = _parse_rest_count_cell(row[rests_col])
+        rest_target_by_emp[emp] = target_rest
+        work_days = max(0, 7 - target_rest)
         pattern_val = row.get(pattern_col) if pattern_col is not None else None
         pattern_hours = _parse_weekly_hours_pattern(pattern_val)
         if pattern_hours:
             duration_patterns_by_emp[emp] = pattern_hours
             base_duration = pattern_hours[0]
+            if weekly_hours > 0:
+                pattern_week = sum(pattern_hours) / 60.0
+                if abs(pattern_week - weekly_hours) > 0.25:
+                    weekly_mismatch.append((emp, weekly_hours, pattern_week))
+            else:
+                weekly_hours = sum(pattern_hours) / 60.0
+        else:
+            if weekly_hours <= 0:
+                weekly_hours = 4.0 * max(1, work_days)
+            if work_days <= 0:
+                base_duration = int(round(weekly_hours * 60.0))
+            else:
+                base_duration = int(round((weekly_hours * 60.0) / work_days))
+        if base_duration <= 0:
+            base_duration = 240
         durations_by_emp[emp] = base_duration
-        rest_target_by_emp[emp] = _parse_rest_count_cell(row[rests_col])
 
         flex_val = row.get(flex_col) if flex_col is not None else None
         out_of_range_allowance_by_emp[emp] = _parse_positive_int(flex_val)
@@ -634,6 +651,11 @@ def infer_personal_params_from_risorse(ris: pd.DataFrame):
             normalized = ''.join(ch for ch in unicodedata.normalize('NFKD', str(split_val).strip().lower()) if not unicodedata.combining(ch))
             split_flag = normalized in {'ok'}
         ot_split_by_emp[emp] = split_flag
+
+    if weekly_mismatch:
+        print("[WARN] Ore settimanali (colonna C) non coerenti con combinazione (colonna Q):")
+        for emp, weekly_hours, pattern_week in weekly_mismatch:
+            print(f"  {emp}: C={weekly_hours}h vs Q={pattern_week:.2f}h")
 
     return (
         durations_by_emp,
